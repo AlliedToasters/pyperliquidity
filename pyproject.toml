@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyperliquidity"
+version = "0.1.0"
+description = "Off-chain HIP-2 Hyperliquidity market maker for Hyperliquid spot markets"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "hyperliquid-python-sdk>=0.4.0",
+    "eth-account>=0.13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "mypy>=1.10",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+pyperliquidity = "pyperliquidity.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyperliquidity"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]

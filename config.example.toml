@@ -1,0 +1,38 @@
+# pyperliquidity configuration
+
+[strategy]
+# HIP-2 parameters
+coin = "@1434"              # Spot pair symbol
+start_px = 0.01             # Initial price of the range (px_0)
+n_orders = 100              # Number of price levels in the grid
+order_sz = 1000.0           # Size of a full order tranche (in token units)
+n_seeded_levels = 10        # Number of levels that begin as bids
+tick_size = 0.003           # Grid spacing (0.3% = HIP-2 default)
+
+[strategy.tick]
+interval_s = 3.0            # Minimum seconds between requote ticks (HIP-2 default: 3)
+
+[differ]
+dead_zone_bps = 15.0        # Skip requote if mid drifted less than this
+price_tolerance_bps = 0.5   # Skip per-order modify if price moved less than this
+size_tolerance_pct = 5.0    # Skip per-order modify if size changed less than this
+
+[emitter]
+max_requests_per_tick = 20  # Cap mutations per tick
+safety_margin = 100         # Budget floor before cancel-only mode
+
+[emitter.cooldowns]
+insufficient_balance_s = 60 # Suppress side after insufficient balance error
+consecutive_reject_s = 10   # Suppress after 3+ consecutive rejections
+
+[reconciliation]
+interval_s = 60             # REST reconciliation frequency
+
+[account]
+# Set via environment variables:
+#   PYPERLIQUIDITY_PRIVATE_KEY  — Ethereum private key (hex)
+#   PYPERLIQUIDITY_WALLET       — Wallet address
+# Or specify here (NOT recommended for production):
+# private_key = "0x..."
+# wallet = "0x..."
+testnet = false             # Use Hyperliquid testnet
