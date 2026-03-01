@@ -319,7 +319,7 @@ class WsState:
         usdc_bal: float | None = None
         for bal in spot_balances:
             coin = bal.get("coin", "")
-            if coin == self.coin:
+            if coin == self._balance_coin:
                 token_bal = float(bal.get("total", 0))
             elif coin == "USDC":
                 usdc_bal = float(bal.get("total", 0))
