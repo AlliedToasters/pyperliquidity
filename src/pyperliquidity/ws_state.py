@@ -106,6 +106,7 @@ class WsState:
         self.emitter: BatchEmitter | None = None
         self.asset_id: int = 0
         self.boundary_level: int = 0
+        self._balance_coin: str = ""  # resolved during _startup from spot_meta
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tick_count: int = 0
@@ -117,17 +118,20 @@ class WsState:
         """Seed all modules from REST data."""
         self._loop = asyncio.get_running_loop()
 
-        # 1. Resolve coin → asset_id
+        # 1. Resolve coin → asset_id and base token name for balance lookups
         spot_meta = await asyncio.to_thread(self._info.spot_meta)
         universe = spot_meta["universe"]
-        spot_index: int | None = None
-        for i, token in enumerate(universe):
+        spot_entry: dict | None = None
+        for token in universe:
             if token["name"] == self.coin:
-                spot_index = i
+                spot_entry = token
                 break
-        if spot_index is None:
+        if spot_entry is None:
             raise ValueError(f"Coin {self.coin!r} not found in spot_meta universe")
-        self.asset_id = spot_index + 10_000
+        self.asset_id = spot_entry["index"] + 10_000
+        # Resolve base token name (e.g. "@1434" → "THC") for balance lookups
+        base_token_idx = spot_entry["tokens"][0]
+        self._balance_coin = spot_meta["tokens"][base_token_idx]["name"]
 
         # 2. Construct PricingGrid
         self.grid = PricingGrid(
@@ -157,7 +161,7 @@ class WsState:
         token_bal = 0.0
         usdc_bal = 0.0
         for bal in spot_state.get("balances", []):
-            if bal["coin"] == self.coin:
+            if bal["coin"] == self._balance_coin:
                 token_bal = float(bal["total"])
             elif bal["coin"] == "USDC":
                 usdc_bal = float(bal["total"])
@@ -418,7 +422,7 @@ class WsState:
         token_bal = 0.0
         usdc_bal = 0.0
         for bal in spot_state.get("balances", []):
-            if bal["coin"] == self.coin:
+            if bal["coin"] == self._balance_coin:
                 token_bal = float(bal["total"])
             elif bal["coin"] == "USDC":
                 usdc_bal = float(bal["total"])

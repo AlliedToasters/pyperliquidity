@@ -94,7 +94,7 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
     testnet = config.get("market", {}).get("testnet", False)
     base_url = TESTNET_API_URL if testnet else MAINNET_API_URL
 
-    info = Info(base_url=base_url, skip_ws=True)
+    info = Info(base_url=base_url, skip_ws=False)
     account = Account.from_key(private_key)
     exchange = Exchange(account, base_url=base_url)
 
