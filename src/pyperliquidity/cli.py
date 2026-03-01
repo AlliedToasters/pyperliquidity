@@ -84,7 +84,10 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
     from eth_account import Account
     from hyperliquid.exchange import Exchange  # type: ignore[import-untyped]
     from hyperliquid.info import Info  # type: ignore[import-untyped]
-    from hyperliquid.utils.constants import MAINNET_API_URL, TESTNET_API_URL  # type: ignore[import-untyped]
+    from hyperliquid.utils.constants import (  # type: ignore[import-untyped]
+        MAINNET_API_URL,
+        TESTNET_API_URL,
+    )
 
     from pyperliquidity.ws_state import WsState
 
