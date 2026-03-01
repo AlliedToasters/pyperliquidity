@@ -54,6 +54,9 @@ class ReconcileResult:
 # Upper bound for the seen_tids dedup set.
 _SEEN_TIDS_CAP = 5000
 
+# Orders with remaining size below this are treated as fully filled.
+_SIZE_EPSILON = 1e-12
+
 
 class OrderState:
     """Dual-indexed order tracker with fill dedup and reconciliation.
@@ -103,6 +106,20 @@ class OrderState:
         self.orders_by_oid[oid] = order
         self.orders_by_key[key] = order
 
+    # -- Pending state management ---------------------------------------------
+
+    def mark_pending_modify(self, oid: int) -> None:
+        """Mark an order as pending modify.  Called before sending the request."""
+        order = self.orders_by_oid.get(oid)
+        if order is not None:
+            order.status = OrderStatus.PENDING_MODIFY
+
+    def mark_pending_cancel(self, oid: int) -> None:
+        """Mark an order as pending cancel.  Called before sending the request."""
+        order = self.orders_by_oid.get(oid)
+        if order is not None:
+            order.status = OrderStatus.PENDING_CANCEL
+
     # -- Modify response ------------------------------------------------------
 
     def on_modify_response(
@@ -133,11 +150,11 @@ class OrderState:
         order.status = OrderStatus.RESTING
 
         if new_oid is not None and new_oid != original_oid:
-            # Atomic OID swap: remove old key, update field, insert new key.
-            del self.orders_by_oid[original_oid]
+            # OID swap: insert new key first so the order is always reachable,
+            # then remove old key.  orders_by_key is untouched — same object.
             order.oid = new_oid
             self.orders_by_oid[new_oid] = order
-            # orders_by_key is unchanged — same object, just oid field updated.
+            del self.orders_by_oid[original_oid]
 
     # -- Fill handling --------------------------------------------------------
 
@@ -164,7 +181,7 @@ class OrderState:
             return None
 
         remaining = order.size - fill_sz
-        fully_filled = remaining <= 0
+        fully_filled = remaining <= _SIZE_EPSILON
 
         result = FillResult(
             side=order.side,
@@ -195,11 +212,23 @@ class OrderState:
 
         Returns orphaned OIDs (on exchange, not in state → cancel) and ghost
         OIDs (in state, not on exchange → remove from state).
+
+        Orders in pending states (PENDING_MODIFY, PENDING_CANCEL) are excluded
+        from ghost detection because their OIDs may be in flux (e.g., an OID
+        swap from a modify that hasn't been processed yet).
         """
+        pending_statuses = {OrderStatus.PENDING_MODIFY, OrderStatus.PENDING_CANCEL}
         tracked_oids = set(self.orders_by_oid.keys())
+        pending_oids = {
+            oid for oid, order in self.orders_by_oid.items()
+            if order.status in pending_statuses
+        }
+        # Pending orders are excluded from ghost detection — their exchange-side
+        # OID may differ from what we're tracking.
+        eligible_for_ghost = tracked_oids - pending_oids
         return ReconcileResult(
             orphaned_oids=frozenset(exchange_oids - tracked_oids),
-            ghost_oids=frozenset(tracked_oids - exchange_oids),
+            ghost_oids=frozenset(eligible_for_ghost - exchange_oids),
         )
 
     def remove_ghost(self, oid: int) -> None:

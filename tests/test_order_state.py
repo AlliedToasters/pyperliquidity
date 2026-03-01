@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-from pyperliquidity.order_state import (
-    FillResult,
-    OrderState,
-    OrderStatus,
-    ReconcileResult,
-    TrackedOrder,
-)
-
+from pyperliquidity.order_state import OrderState, OrderStatus
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -377,3 +370,104 @@ class TestGetCurrentOrders:
     def test_empty_state(self) -> None:
         state = _make_state()
         assert state.get_current_orders() == []
+
+
+# ===========================================================================
+# Near-zero fill size threshold
+# ===========================================================================
+
+
+class TestNearZeroFill:
+    def test_tiny_positive_remainder_treated_as_full(self) -> None:
+        """Float precision can leave a near-zero remainder; should still remove."""
+        state = _make_state()
+        _place(state, oid=100, side="buy", level_index=5, size=10.0)
+        # Fill with a value that leaves a tiny positive remainder due to float math
+        result = state.on_fill(tid=8001, oid=100, fill_sz=10.0 - 1e-15)
+        assert result is not None
+        assert result.fully_filled is True
+        assert 100 not in state.orders_by_oid
+        assert ("buy", 5) not in state.orders_by_key
+
+
+# ===========================================================================
+# Pending state management
+# ===========================================================================
+
+
+class TestPendingState:
+    def test_mark_pending_modify(self) -> None:
+        state = _make_state()
+        _place(state, oid=100, side="buy", level_index=5)
+        state.mark_pending_modify(100)
+        assert state.orders_by_oid[100].status == OrderStatus.PENDING_MODIFY
+
+    def test_mark_pending_cancel(self) -> None:
+        state = _make_state()
+        _place(state, oid=100, side="buy", level_index=5)
+        state.mark_pending_cancel(100)
+        assert state.orders_by_oid[100].status == OrderStatus.PENDING_CANCEL
+
+    def test_mark_unknown_oid_noop(self) -> None:
+        state = _make_state()
+        state.mark_pending_modify(999)  # Should not raise
+        state.mark_pending_cancel(999)
+
+    def test_modify_response_clears_pending(self) -> None:
+        state = _make_state()
+        _place(state, oid=100, side="buy", level_index=5)
+        state.mark_pending_modify(100)
+        state.on_modify_response(original_oid=100, new_oid=150, status="resting")
+        assert state.orders_by_oid[150].status == OrderStatus.RESTING
+
+
+# ===========================================================================
+# Reconcile skips pending orders (the subtle OID-swap bug)
+# ===========================================================================
+
+
+class TestReconcilePendingModify:
+    def test_pending_modify_not_flagged_as_ghost(self) -> None:
+        """A pending_modify order whose OID is in flux should NOT be a ghost.
+
+        Scenario: we sent a modify for OID 100, exchange assigned new OID 150.
+        Before we process the response, reconciliation runs.  Exchange reports
+        {150}, we track {100}.  Without the pending filter, 100 would be
+        flagged as ghost and 150 as orphan — both wrong.
+        """
+        state = _make_state()
+        _place(state, oid=100, side="buy", level_index=5)
+        state.mark_pending_modify(100)
+
+        # Exchange has the new OID (150), we still track old (100)
+        result = state.reconcile({150})
+
+        # 100 should NOT be in ghost_oids — it's pending modify
+        assert 100 not in result.ghost_oids
+        # 150 IS orphaned (we don't know about it yet) — that's expected,
+        # the modify response will reconcile this
+        assert 150 in result.orphaned_oids
+
+    def test_pending_cancel_not_flagged_as_ghost(self) -> None:
+        state = _make_state()
+        _place(state, oid=100, side="sell", level_index=3)
+        state.mark_pending_cancel(100)
+
+        # Cancel might not have landed yet — exchange still has it
+        result = state.reconcile({100})
+        assert result.ghost_oids == frozenset()
+        assert result.orphaned_oids == frozenset()
+
+    def test_resting_order_still_detected_as_ghost(self) -> None:
+        """Resting orders not on exchange are still ghosts."""
+        state = _make_state()
+        _place(state, oid=100, side="buy", level_index=5)
+        _place(state, oid=200, side="sell", level_index=3)
+        state.mark_pending_modify(200)
+
+        result = state.reconcile(set())
+
+        # 100 is resting and not on exchange → ghost
+        assert 100 in result.ghost_oids
+        # 200 is pending → not flagged
+        assert 200 not in result.ghost_oids
