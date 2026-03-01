@@ -50,7 +50,8 @@ def _parse_statuses(response: Any) -> list[dict[str, Any]]:
     """Extract the statuses array from an SDK batch response."""
     if isinstance(response, dict) and response.get("status") == "ok":
         data = response.get("response", {}).get("data", {})
-        return data.get("statuses", [])
+        statuses: list[dict[str, Any]] = data.get("statuses", [])
+        return statuses
     return []
 
 
