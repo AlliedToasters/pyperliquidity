@@ -96,17 +96,16 @@ The price is NOT computed from an AMM formula — it emerges from where the inve
 ## Commands
 
 ```bash
-# Install in dev mode
-pip install -e ".[dev]"
+# Local venv (already set up at .venv/)
+.venv/bin/pytest            # Run tests
+.venv/bin/ruff check src/ tests/  # Lint
+.venv/bin/mypy src/         # Type check
 
-# Run tests
-pytest
-
-# Type check
-mypy src/
+# Rebuild venv from scratch
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 # Run the market maker (eventual CLI)
-pyperliquidity run --config config.toml
+.venv/bin/pyperliquidity run --config config.toml
 ```
 
 ## Key References
