@@ -4,7 +4,6 @@ from pyperliquidity.order_differ import OrderDiff, compute_diff
 from pyperliquidity.order_state import TrackedOrder
 from pyperliquidity.quoting_engine import DesiredOrder
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

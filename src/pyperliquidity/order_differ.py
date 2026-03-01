@@ -6,8 +6,8 @@ mutations (modify, place, cancel) to converge current orders to desired.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Sequence
 
 from pyperliquidity.order_state import TrackedOrder
 from pyperliquidity.quoting_engine import DesiredOrder
@@ -81,9 +81,6 @@ def compute_diff(
     current_by_key: dict[tuple[str, int], TrackedOrder] = {
         (c.side, c.level_index): c for c in current
     }
-
-    # Also index current orders by level_index alone for cross-side detection
-    current_by_level: dict[int, TrackedOrder] = {c.level_index: c for c in current}
 
     modifies: list[tuple[int, DesiredOrder]] = []
     places: list[DesiredOrder] = []
