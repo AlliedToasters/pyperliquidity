@@ -6,16 +6,22 @@ Pure function that computes the desired set of orders given current inventory an
 
 ## Interface
 
-```
+```python
 compute_desired_orders(
-    grid: PriceGrid,
-    token_balance: float,
-    usdc_balance: float,
+    grid: PricingGrid,
+    boundary_level: int,
+    effective_token: float,
+    effective_usdc: float,
     order_sz: float,
+    min_notional: float = 0.0,
 ) -> list[DesiredOrder]
 ```
 
-Where:
+Where `boundary_level` is the lowest ask level index on the grid, passed as an explicit parameter. `min_notional` defaults to 0.0 (no filtering).
+
+### DesiredOrder
+
+A frozen dataclass:
 ```
 DesiredOrder:
     side: "buy" | "sell"
@@ -24,44 +30,54 @@ DesiredOrder:
     size: float
 ```
 
+`DesiredOrder` is immutable and hashable. Two instances with identical fields are equal and share the same hash.
+
 ## Algorithm
 
 1. **Compute ask tranches**:
-   - `n_full = floor(token_balance / order_sz)`
-   - `partial = token_balance % order_sz`
-   - Place `n_full` asks of size `order_sz` at ascending grid levels starting from the boundary
-   - If `partial > 0`, place one partial ask above the full asks (or at the boundary+n_full level)
+   - `n_full = floor(effective_token / order_sz)`
+   - `partial = effective_token - n_full * order_sz`
+   - Place `n_full` asks of size `order_sz` at ascending grid levels starting from `boundary_level`
+   - If `partial > 0`, place one partial ask at level `boundary_level + n_full`
+   - If any ask level exceeds the grid's maximum index, truncate (do not place that order)
 
-2. **Determine boundary**: The boundary level is the lowest ask level. All levels below are potential bids.
+2. **Compute bid tranches**:
+   - Walk grid levels descending from `boundary_level - 1`
+   - At each level, compute cost = `grid.price_at_level(level) * order_sz`
+   - If `effective_usdc >= cost`, place a full bid (size `order_sz`) and deduct cost
+   - If remaining USDC cannot cover a full bid but is > 0, place a partial bid with `remaining_usdc / price`
+   - Stop when USDC is exhausted or level 0 is reached
 
-3. **Compute bid tranches**:
-   - Walk grid levels descending from `boundary - 1`
-   - At each level, if `usdc_balance >= price * order_sz`, place a full bid and deduct the cost
-   - If remaining USDC can't cover a full bid, place a partial bid with `remaining_usdc / price`
-   - Stop when USDC is exhausted
+3. **Minimum notional filtering**: Remove any order where `price * size < min_notional` from the result (both asks and bids, including partials).
 
-4. **Return**: All desired orders (bids + asks), each tagged with their grid level_index
+4. **Return**: All desired orders (asks + bids), each tagged with their grid level_index
 
 ## Invariants
 
-1. Output is deterministic: same inputs always produce the same orders
+1. Output is deterministic: same inputs always produce the same orders in the same order
 2. No ask and bid share the same grid level (guaranteed 0.3% spread minimum)
-3. Total ask size == token_balance (all tokens are quoted)
-4. Total bid cost (sum of px * sz for bids) ≤ usdc_balance
+3. Total ask size == effective_token (all tokens are quoted, before min_notional filtering)
+4. Total bid cost (sum of px * sz for bids) ≤ effective_usdc
 5. Orders are contiguous on the grid — no gaps between the lowest ask and highest bid
+6. No side effects, no I/O, no dependency on external mutable state
 
 ## Boundary Tracking
 
-The boundary is NOT a stored parameter — it is computed from the inventory decomposition. As fills occur, the boundary shifts naturally. This is the key insight: the "price" of the market maker is an emergent property of its inventory, just like a constant-product AMM.
+The boundary is the lowest ask level index, passed explicitly as `boundary_level`. As fills occur, the boundary shifts naturally. The "price" of the market maker is an emergent property of its inventory position on the grid, just like a constant-product AMM.
 
 ## Edge Cases
 
-- All tokens sold (token_balance ≈ 0): Only bids, no asks. Boundary is at the top of filled levels.
-- All USDC spent (usdc_balance ≈ 0): Only asks, no bids. Boundary is at the bottom.
+- All tokens sold (effective_token = 0): Only bids, no asks.
+- All USDC spent (effective_usdc = 0): Only asks, no bids.
+- Both balances zero: Return an empty list.
+- boundary_level at 0: No bids (no levels below boundary).
+- boundary_level at grid max: No asks (no room on the grid).
 - order_sz larger than total balance: Single partial order on one side.
-- Minimum order size enforcement: Exchange may reject orders below a minimum notional. Filter these out.
+- Grid overflow: Asks that exceed the grid's maximum level index are truncated.
+- Minimum notional filtering: Orders below `min_notional` are excluded from the result.
 
 ## Dependencies
 
-- `pricing_grid`: Grid levels and prices
-- NO dependency on order_state, ws_state, or any I/O module
+- `pricing_grid.PricingGrid`: Grid levels and prices
+- Standard library and typing only
+- NO dependency on `order_state`, `ws_state`, `batch_emitter`, `rate_limit`, or any I/O module

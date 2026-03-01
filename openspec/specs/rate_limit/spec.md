@@ -18,17 +18,56 @@ budget = 10_000 + cumulative_volume_usd - cumulative_requests
 
 - `cum_vlm: float` — Cumulative fill volume in USD
 - `n_requests: int` — Cumulative API requests made
-- `budget: int` — Computed: `10_000 + cum_vlm - n_requests`
-- `ratio: float` — Computed: `cum_vlm / max(n_requests, 1)`
+- `SAFETY_MARGIN: int = 500` — Threshold for emergency detection
+- `CRITICAL_MARGIN: int = 100` — Near-throttle threshold
+
+### Budget Computation
+
+The `budget` property SHALL compute `10_000 + cum_vlm - n_requests`. The `remaining()` method SHALL return `max(0, budget)`.
+
+- **Fresh instance**: `remaining()` returns `10_000`
+- **After requests**: `on_request()` called 5 times → `remaining()` returns `9_995`
+- **After fills**: `on_fill(100.0)` → `remaining()` increases by `100`
+- **Floor**: when `n_requests` exceeds `10_000 + cum_vlm`, `remaining()` returns `0`
+
+### Utilization Ratio
+
+The `ratio` property SHALL compute `cum_vlm / max(n_requests, 1)`.
+
+- **No requests**: ratio returns `0.0`
+- **Healthy**: `cum_vlm=1000, n_requests=800` → ratio `1.25`
 
 ## Operations
 
-- `on_request(n=1)`: Increment n_requests (called by batch_emitter after each API call)
-- `on_fill(volume_usd)`: Increment cum_vlm
-- `sync_from_exchange(rate_limit_response)`: Reset from REST `user_rate_limit()` data
-- `remaining() -> int`: Current budget
-- `is_healthy() -> bool`: `ratio >= 1.0`
-- `is_emergency() -> bool`: `budget < SAFETY_MARGIN`
+### Request Tracking
+
+`on_request(n=1)` SHALL increment `n_requests` by `n`. Default increment is 1 (one API call or batch operation of any size).
+
+### Fill Volume Tracking
+
+`on_fill(volume_usd)` SHALL increment `cum_vlm` by the given USD amount. Multiple fills accumulate.
+
+### Exchange Sync
+
+`sync_from_exchange(cum_vlm, n_requests)` SHALL overwrite local `cum_vlm` and `n_requests` with exchange-reported values. The exchange is the authoritative source of truth.
+
+### Health Check
+
+`is_healthy()` SHALL return `True` when `ratio >= 1.0`.
+
+- **Healthy**: `cum_vlm=1000, n_requests=800` → `True`
+- **Unhealthy**: `cum_vlm=500, n_requests=800` → `False`
+
+### Emergency Detection
+
+`is_emergency()` SHALL return `True` when `remaining() < SAFETY_MARGIN` (default 500).
+
+- **Normal**: `remaining()=5000` → `False`
+- **Emergency**: `remaining()=300` → `True`
+
+### Status Logging
+
+`log_status()` SHALL return a formatted string containing `ratio=`, `budget=`, `vol=`, and `reqs=` with current metrics.
 
 ## Monitoring
 
