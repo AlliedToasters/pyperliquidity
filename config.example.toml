@@ -9,6 +9,10 @@ order_sz = 1000.0           # Size of a full order tranche (in token units)
 n_seeded_levels = 10        # Number of levels that begin as bids
 tick_size = 0.003           # Grid spacing (0.3% = HIP-2 default)
 
+[allocation]
+allocated_token = 1000.0    # Max token balance the strategy may use
+allocated_usdc = 500.0      # Max USDC balance the strategy may use
+
 [strategy.tick]
 interval_s = 3.0            # Minimum seconds between requote ticks (HIP-2 default: 3)
 

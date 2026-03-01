@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pyperliquidity.cli import _load_config, _load_env, _validate_config
+from pyperliquidity.cli import _build_ws_state, _load_config, _load_env, _validate_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -159,3 +160,28 @@ class TestValidateConfig:
         msg = str(exc_info.value)
         assert "start_px" in msg
         assert "n_orders" in msg
+
+
+# ---------------------------------------------------------------------------
+# _build_ws_state — allocation passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestBuildWsStateAllocation:
+    """Verify that allocation config values are passed to WsState."""
+
+    @patch("eth_account.Account")
+    @patch("hyperliquid.exchange.Exchange")
+    @patch("hyperliquid.info.Info")
+    def test_allocation_passed_to_ws_state(
+        self, mock_info_cls: MagicMock, mock_exchange_cls: MagicMock, mock_account_cls: MagicMock,
+    ) -> None:
+        mock_info_cls.return_value = MagicMock()
+        mock_exchange_cls.return_value = MagicMock()
+        mock_account_cls.from_key.return_value = MagicMock()
+
+        config = _validate_config({**VALID_CONFIG})
+        ws = _build_ws_state(config, private_key="0xdeadbeef", wallet="0xabc")
+
+        assert ws._allocated_token == 1000.0
+        assert ws._allocated_usdc == 500.0
