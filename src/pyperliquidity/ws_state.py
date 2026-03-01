@@ -55,6 +55,10 @@ class WsState:
         Run reconciliation every N ticks.
     min_notional : float
         Minimum notional value for an order.
+    allocated_token : float
+        Maximum token balance the strategy may use (``inf`` = full account).
+    allocated_usdc : float
+        Maximum USDC balance the strategy may use (``inf`` = full account).
     """
 
     def __init__(
@@ -73,6 +77,8 @@ class WsState:
         size_tolerance_pct: float = 1.0,
         reconcile_every: int = 20,
         min_notional: float = 0.0,
+        allocated_token: float = float("inf"),
+        allocated_usdc: float = float("inf"),
     ) -> None:
         self.coin = coin
         self.start_px = start_px
@@ -85,6 +91,8 @@ class WsState:
         self.size_tolerance_pct = size_tolerance_pct
         self.reconcile_every = reconcile_every
         self.min_notional = min_notional
+        self._allocated_token = allocated_token
+        self._allocated_usdc = allocated_usdc
 
         self._info = info
         self._exchange = exchange
@@ -156,8 +164,8 @@ class WsState:
 
         self.inventory = Inventory(
             order_sz=self.order_sz,
-            allocated_token=token_bal,
-            allocated_usdc=usdc_bal,
+            allocated_token=self._allocated_token,
+            allocated_usdc=self._allocated_usdc,
             account_token=token_bal,
             account_usdc=usdc_bal,
         )

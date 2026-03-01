@@ -100,6 +100,7 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
 
     strategy = config["strategy"]
     tuning = config["tuning"]
+    allocation = config["allocation"]
 
     return WsState(
         coin=config["market"]["coin"],
@@ -116,6 +117,8 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
         size_tolerance_pct=tuning["size_tolerance_pct"],
         reconcile_every=tuning["reconcile_every"],
         min_notional=tuning["min_notional"],
+        allocated_token=allocation["allocated_token"],
+        allocated_usdc=allocation["allocated_usdc"],
     )
 
 
