@@ -101,6 +101,7 @@ class WsState:
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tick_count: int = 0
+        self._ws_alive: bool = True
 
     # -- Startup ---------------------------------------------------------------
 
@@ -268,6 +269,8 @@ class WsState:
                 self.order_state.on_modify_response(
                     original_oid=oid, new_oid=None, status=status,
                 )
+            elif status == "canceled":
+                self.order_state.remove_ghost(oid)
 
     async def _handle_fill(self, msg: Any) -> None:
         """Route userFills to OrderState → Inventory."""
@@ -355,6 +358,9 @@ class WsState:
         while True:
             self._tick_count += 1
 
+            # Check WS health every tick (~3s)
+            await self._check_ws_health()
+
             try:
                 await self._tick()
             except Exception:
@@ -409,6 +415,27 @@ class WsState:
             elif bal["coin"] == "USDC":
                 usdc_bal = float(bal["total"])
         self.inventory.on_balance_update(token=token_bal, usdc=usdc_bal)
+
+    # -- WS health monitoring --------------------------------------------------
+
+    async def _check_ws_health(self) -> None:
+        """Detect WS disconnect/reconnect via ws_manager.is_alive().
+
+        On dead→alive transition, triggers resubscribe + full reconciliation.
+        """
+        try:
+            alive = self._info.ws_manager.is_alive()
+        except AttributeError:
+            return  # SDK object doesn't expose ws_manager
+
+        if alive and not self._ws_alive:
+            # Was dead, now alive — reconnection detected
+            self._ws_alive = True
+            logger.info("WebSocket reconnected, running reconciliation")
+            await self._on_reconnect()
+        elif not alive and self._ws_alive:
+            logger.warning("WebSocket disconnected")
+            self._ws_alive = False
 
     # -- Reconnection ----------------------------------------------------------
 

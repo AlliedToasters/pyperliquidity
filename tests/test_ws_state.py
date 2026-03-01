@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from pyperliquidity.ws_state import WsState
-
 
 # --- Helpers ------------------------------------------------------------------
 
@@ -437,3 +436,91 @@ async def test_reconnect_resubscribes_and_reconciles():
     assert info.subscribe.call_count == 3
     # Should have called open_orders for reconciliation
     assert info.open_orders.call_count >= 1
+
+
+# --- 6.5 Canceled order update -----------------------------------------------
+
+async def test_order_update_canceled_removes_from_state():
+    """orderUpdates with status=canceled removes order from state."""
+    ws, _, _ = _make_ws_state()
+    await ws._startup()
+
+    ws.order_state.on_place_confirmed(
+        oid=99, side="buy", level_index=2, price=1.006, size=10.0,
+    )
+    assert 99 in ws.order_state.orders_by_oid
+
+    msg = [{"status": "canceled", "order": {"oid": 99}}]
+    await ws._handle_order_update(msg)
+
+    assert 99 not in ws.order_state.orders_by_oid
+    assert ("buy", 2) not in ws.order_state.orders_by_key
+
+
+# --- 6.6 WS health monitoring ------------------------------------------------
+
+async def test_ws_disconnect_detected():
+    """WS health check detects disconnect."""
+    info = _make_info()
+    info.ws_manager = MagicMock()
+    info.ws_manager.is_alive.return_value = False
+
+    ws, _, _ = _make_ws_state(info=info)
+    await ws._startup()
+    assert ws._ws_alive is True
+
+    await ws._check_ws_health()
+
+    assert ws._ws_alive is False
+
+
+async def test_ws_reconnect_triggers_resubscribe_and_reconcile():
+    """Dead→alive transition triggers resubscribe + reconciliation."""
+    info = _make_info()
+    info.ws_manager = MagicMock()
+    info.ws_manager.is_alive.return_value = True
+    info.open_orders.return_value = []
+
+    ws, _, _ = _make_ws_state(info=info)
+    await ws._startup()
+
+    # Simulate a previous disconnect
+    ws._ws_alive = False
+    info.subscribe.reset_mock()
+
+    await ws._check_ws_health()
+
+    assert ws._ws_alive is True
+    # Should have resubscribed (3 feeds)
+    assert info.subscribe.call_count == 3
+    # Should have run reconciliation (open_orders called)
+    assert info.open_orders.call_count >= 1
+
+
+async def test_ws_healthy_no_action():
+    """No action when WS stays healthy (alive→alive)."""
+    info = _make_info()
+    info.ws_manager = MagicMock()
+    info.ws_manager.is_alive.return_value = True
+
+    ws, _, _ = _make_ws_state(info=info)
+    await ws._startup()
+    info.subscribe.reset_mock()
+
+    await ws._check_ws_health()
+
+    # No resubscribe, no reconciliation
+    info.subscribe.assert_not_called()
+
+
+async def test_ws_health_no_ws_manager():
+    """Health check is a no-op if SDK doesn't expose ws_manager."""
+    info = _make_info()
+    # Remove the auto-created ws_manager attribute
+    del info.ws_manager
+
+    ws, _, _ = _make_ws_state(info=info)
+    await ws._startup()
+
+    # Should not raise
+    await ws._check_ws_health()
