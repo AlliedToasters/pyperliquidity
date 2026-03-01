@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from pyperliquidity.inventory import Inventory, TrancheDecomposition
 from pyperliquidity.pricing_grid import PricingGrid
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -252,7 +249,7 @@ class TestFillEvents:
         assert inv.effective_token == pytest.approx(100.0)  # clamped
 
     def test_fill_sequence_shifting_boundary(self) -> None:
-        grid = _make_grid(start_px=1.0, n_orders=20)
+        _make_grid(start_px=1.0, n_orders=20)
         inv = _make_inv(
             order_sz=10.0,
             acct_token=50.0, alloc_token=50.0,
