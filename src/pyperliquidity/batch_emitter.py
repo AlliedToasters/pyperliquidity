@@ -192,8 +192,10 @@ class BatchEmitter:
     ) -> tuple[int, int]:
         reqs = [{"a": self.asset_id, "o": oid} for oid in cancel_oids]
 
-        response = await asyncio.to_thread(self._exchange.bulk_cancel, reqs)
-        budget.on_request()
+        try:
+            response = await asyncio.to_thread(self._exchange.bulk_cancel, reqs)
+        finally:
+            budget.on_request()
 
         statuses = _parse_statuses(response)
         n_ok = n_err = 0
@@ -238,10 +240,12 @@ class BatchEmitter:
             for oid, desired in modifies
         ]
 
-        response = await asyncio.to_thread(
-            self._exchange.bulk_modify_orders_new, reqs
-        )
-        budget.on_request()
+        try:
+            response = await asyncio.to_thread(
+                self._exchange.bulk_modify_orders_new, reqs
+            )
+        finally:
+            budget.on_request()
 
         statuses = _parse_statuses(response)
         n_ok = n_err = 0
@@ -270,6 +274,10 @@ class BatchEmitter:
                 )
                 n_err += 1
             else:
+                logger.warning(
+                    "Unhandled modify status oid=%d: %s", original_oid, status,
+                )
+                self._order_state.remove_ghost(original_oid)
                 n_err += 1
 
         return n_ok, n_err
@@ -291,8 +299,10 @@ class BatchEmitter:
             for d in places
         ]
 
-        response = await asyncio.to_thread(self._exchange.bulk_orders, reqs)
-        budget.on_request()
+        try:
+            response = await asyncio.to_thread(self._exchange.bulk_orders, reqs)
+        finally:
+            budget.on_request()
 
         statuses = _parse_statuses(response)
         n_ok = n_err = 0
@@ -327,6 +337,10 @@ class BatchEmitter:
                         self._consecutive_rejects[desired.side] = 0
                 n_err += 1
             else:
+                logger.warning(
+                    "Unhandled place status side=%s level=%d: %s",
+                    desired.side, desired.level_index, status,
+                )
                 n_err += 1
 
         return n_ok, n_err

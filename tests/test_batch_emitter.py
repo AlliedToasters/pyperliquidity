@@ -8,10 +8,7 @@ import pytest
 
 from pyperliquidity.batch_emitter import (
     BALANCE_COOLDOWN_S,
-    CONSECUTIVE_REJECT_THRESHOLD,
-    MAX_MUTATIONS_PER_TICK,
     REJECT_COOLDOWN_S,
-    SAFETY_MARGIN,
     BatchEmitter,
     EmitResult,
 )
@@ -19,7 +16,6 @@ from pyperliquidity.order_differ import OrderDiff
 from pyperliquidity.order_state import OrderState
 from pyperliquidity.quoting_engine import DesiredOrder
 from pyperliquidity.rate_limit import RateLimitBudget
-
 
 # --- Helpers ------------------------------------------------------------------
 
@@ -132,7 +128,7 @@ async def test_priority_trimming_drops_places_first():
 
     diff = OrderDiff(cancels=cancels, modifies=modifies, places=places)
     budget = _budget(remaining=5000)
-    result = await emitter.emit(diff, budget)
+    await emitter.emit(diff, budget)
 
     # Check that bulk_orders was called with only 5 orders (trimmed from 10)
     placed_reqs = ex.bulk_orders.call_args[0][0]
@@ -436,3 +432,55 @@ async def test_cancel_error_still_removes_from_state():
     # The order should be removed from state regardless of the error
     assert 100 not in os.orders_by_oid
     assert ("buy", 5) not in os.orders_by_key
+
+
+# --- 5.13 Unknown modify status removes order --------------------------------
+
+async def test_unknown_modify_status_removes_from_state():
+    emitter, ex, os, _ = _make_emitter()
+    os.on_place_confirmed(oid=100, side="buy", level_index=5, price=1.0, size=10.0)
+
+    # Return an unexpected status (e.g., "filled" or empty dict)
+    ex.bulk_modify_orders_new.return_value = _ok([{"filled": {"totalSz": "10.0"}}])
+
+    diff = OrderDiff(modifies=[(100, _desired(side="buy", level=5, px=1.1))])
+    budget = _budget()
+    result = await emitter.emit(diff, budget)
+
+    # Unhandled status → order removed from state as safety measure
+    assert 100 not in os.orders_by_oid
+    assert ("buy", 5) not in os.orders_by_key
+    assert result.n_errors == 1
+
+
+async def test_truncated_modify_response_removes_from_state():
+    emitter, ex, os, _ = _make_emitter()
+    os.on_place_confirmed(oid=100, side="buy", level_index=5, price=1.0, size=10.0)
+
+    # Fewer statuses than requests → empty dict fallback → else branch
+    ex.bulk_modify_orders_new.return_value = _ok([])
+
+    diff = OrderDiff(modifies=[(100, _desired(side="buy", level=5, px=1.1))])
+    budget = _budget()
+    result = await emitter.emit(diff, budget)
+
+    assert 100 not in os.orders_by_oid
+    assert result.n_errors == 1
+
+
+# --- 5.14 Budget debited on SDK exception ------------------------------------
+
+async def test_budget_debited_on_sdk_exception():
+    emitter, ex, os, _ = _make_emitter()
+
+    ex.bulk_orders.side_effect = ConnectionError("network error")
+
+    diff = OrderDiff(places=[_desired(level=0)])
+    budget = _budget()
+    initial_requests = budget.n_requests
+
+    with pytest.raises(ConnectionError):
+        await emitter.emit(diff, budget)
+
+    # Budget should still be debited even though the call raised
+    assert budget.n_requests == initial_requests + 1
