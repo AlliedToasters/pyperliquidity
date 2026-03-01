@@ -6,7 +6,7 @@ Compare desired orders (from quoting engine) against current orders (from order 
 
 ## Interface
 
-```
+```python
 compute_diff(
     desired: list[DesiredOrder],
     current: list[TrackedOrder],
@@ -16,8 +16,9 @@ compute_diff(
 ) -> OrderDiff
 ```
 
-Where:
-```
+### OrderDiff Data Structure
+
+```python
 OrderDiff:
     modifies: list[tuple[int, DesiredOrder]]   # (existing_oid, new_desired)
     places: list[DesiredOrder]                  # New orders to place
@@ -27,24 +28,41 @@ OrderDiff:
 ## Algorithm
 
 ### Step 1: Dead Zone Check
-Compute the "center of mass" or mid of both desired and current order sets. If the drift is below `dead_zone_bps`, return an empty diff. This alone suppresses ~99% of mutations on low-volume markets.
+
+Compute the size-weighted average price of both desired and current order sets. If the absolute difference in basis points is below `dead_zone_bps`, return an empty diff. This alone suppresses ~99% of mutations on low-volume markets.
+
+- **Drift below threshold**: drift 5 bps, dead_zone 15 → empty diff
+- **Drift above threshold**: drift 20 bps, dead_zone 15 → proceed to matching
+- **Empty current bypass**: current empty, desired non-empty → skip dead zone, place all
+- **Empty desired bypass**: desired empty, current non-empty → skip dead zone, cancel all
 
 Recommended: 10-20 bps for low-volume markets.
 
 ### Step 2: Level-Index Matching
-Key both desired and current orders by `(side, level_index)`. This provides stable identity across ticks — when fair value shifts, "bid level 3" stays "bid level 3", just at a different price. Match desired to current by this key.
+
+Key both desired and current orders by `(side, level_index)`. This provides stable identity across ticks — when fair value shifts, "bid level 3" stays "bid level 3", just at a different price.
 
 - **Match found**: Candidate for modify (or skip if within tolerance)
 - **Desired with no match**: New placement needed
 - **Current with no match**: Cancel needed
 
 ### Step 3: Per-Order Tolerance
+
 For each matched pair, skip the modify if BOTH:
 - Price moved less than `price_tolerance_bps` (recommend 0.5 bps)
 - Size changed less than `size_tolerance_pct` (recommend 5%)
 
+Scenarios:
+- **Within tolerance**: both price and size within thresholds → skip (no modify)
+- **Exceeds price tolerance**: price differs beyond threshold → emit modify
+- **Exceeds size tolerance**: size differs beyond threshold → emit modify
+
 ### Step 4: Cross-Side Validation
-CRITICAL: Hyperliquid rejects cross-side modifications (buy→sell or sell→buy). If a level_index changed sides between current and desired (shouldn't happen in normal operation), emit a cancel + place instead of a modify.
+
+CRITICAL: Hyperliquid rejects cross-side modifications (buy→sell or sell→buy). The differ SHALL NEVER emit a modify that changes an order's side.
+
+- **Cross-side detected**: current buy at level 5, desired sell at level 5 → emit cancel + place (not modify)
+- **Same-side modify**: current buy and desired buy at same level, different price/size → emit modify
 
 ## Output
 
@@ -57,6 +75,7 @@ The diff contains the minimum mutations. The batch emitter decides whether to ac
 3. Level-index identity is stable: a modify always targets the same (side, level_index)
 4. Dead zone check is computed BEFORE per-order matching (short-circuit optimization)
 5. This module is pure — no I/O, no API calls
+6. Deterministic: same inputs always produce the same output
 
 ## Tuning
 
