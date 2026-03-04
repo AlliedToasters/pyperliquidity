@@ -284,7 +284,7 @@ async def test_cooldown_suppresses_placements():
     assert result.n_placed == 1
     placed_reqs = ex.bulk_orders.call_args[0][0]
     assert len(placed_reqs) == 1
-    assert placed_reqs[0]["b"] is True  # buy
+    assert placed_reqs[0]["is_buy"] is True  # buy
 
 
 async def test_successful_placement_clears_cooldown():

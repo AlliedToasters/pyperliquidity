@@ -230,12 +230,12 @@ class BatchEmitter:
             {
                 "oid": oid,
                 "order": {
-                    "a": self.asset_id,
-                    "b": desired.side == "buy",
-                    "p": str(desired.price),
-                    "s": str(desired.size),
-                    "r": False,
-                    "t": _ALO_ORDER_TYPE,
+                    "coin": self.coin,
+                    "is_buy": desired.side == "buy",
+                    "sz": desired.size,
+                    "limit_px": desired.price,
+                    "order_type": _ALO_ORDER_TYPE,
+                    "reduce_only": False,
                 },
             }
             for oid, desired in modifies
@@ -290,12 +290,12 @@ class BatchEmitter:
     ) -> tuple[int, int]:
         reqs = [
             {
-                "a": self.asset_id,
-                "b": d.side == "buy",
-                "p": str(d.price),
-                "s": str(d.size),
-                "r": False,
-                "t": _ALO_ORDER_TYPE,
+                "coin": self.coin,
+                "is_buy": d.side == "buy",
+                "sz": d.size,
+                "limit_px": d.price,
+                "order_type": _ALO_ORDER_TYPE,
+                "reduce_only": False,
             }
             for d in places
         ]
