@@ -121,7 +121,7 @@ class WsState:
         # 1. Resolve coin → asset_id and base token name for balance lookups
         spot_meta = await asyncio.to_thread(self._info.spot_meta)
         universe = spot_meta["universe"]
-        spot_entry: dict | None = None
+        spot_entry: dict[str, Any] | None = None
         for token in universe:
             if token["name"] == self.coin:
                 spot_entry = token
