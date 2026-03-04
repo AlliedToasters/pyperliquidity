@@ -9,11 +9,11 @@ from dataclasses import dataclass, field
 
 
 def _default_round(px: float) -> float:
-    """Round to 8 significant figures."""
+    """Round to 5 significant figures (Hyperliquid's max precision)."""
     if px == 0:
         return 0.0
     magnitude = math.floor(math.log10(abs(px))) + 1
-    return round(px, 8 - magnitude)
+    return round(px, 5 - magnitude)
 
 
 @dataclass(frozen=True)

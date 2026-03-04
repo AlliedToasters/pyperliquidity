@@ -457,7 +457,7 @@ async def test_truncated_modify_response_removes_from_state():
     emitter, ex, os, _ = _make_emitter()
     os.on_place_confirmed(oid=100, side="buy", level_index=5, price=1.0, size=10.0)
 
-    # Fewer statuses than requests → empty dict fallback → else branch
+    # Fewer statuses than requests → propagated "batch truncated" error
     ex.bulk_modify_orders_new.return_value = _ok([])
 
     diff = OrderDiff(modifies=[(100, _desired(side="buy", level=5, px=1.1))])
@@ -466,6 +466,40 @@ async def test_truncated_modify_response_removes_from_state():
 
     assert 100 not in os.orders_by_oid
     assert result.n_errors == 1
+
+
+# --- 5.15 Truncated batch response propagation --------------------------------
+
+async def test_truncated_place_response_propagates_first_error():
+    """Issue #18: exchange returns 1 status for 10 orders → remaining get the error."""
+    emitter, ex, os, _ = _make_emitter()
+
+    # Exchange returns 1 error status for a batch of 3 orders
+    ex.bulk_orders.return_value = _ok([{"error": "Order has invalid price."}])
+
+    diff = OrderDiff(places=[_desired(level=i) for i in range(3)])
+    budget = _budget()
+    result = await emitter.emit(diff, budget)
+
+    # All 3 should be counted as errors (not just 1 error + 2 "unhandled")
+    assert result.n_errors == 3
+    assert result.n_placed == 0
+
+
+async def test_truncated_cancel_response_propagates_error():
+    emitter, ex, os, _ = _make_emitter()
+    for i in range(3):
+        os.on_place_confirmed(oid=i + 1, side="buy", level_index=i, price=1.0, size=10.0)
+
+    ex.bulk_cancel.return_value = _ok([{"error": "some error"}])
+
+    diff = OrderDiff(cancels=[1, 2, 3])
+    budget = _budget()
+    result = await emitter.emit(diff, budget)
+
+    # All 3 cancels get the error propagated
+    assert result.n_errors == 3
+    assert result.n_cancelled == 0
 
 
 # --- 5.14 Budget debited on SDK exception ------------------------------------

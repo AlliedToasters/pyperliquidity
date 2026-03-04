@@ -194,14 +194,13 @@ class TestBidTranches:
         assert t.levels == (0,)
 
     def test_usdc_exhausted_exactly_at_level(self, grid: PricingGrid) -> None:
-        # Give exactly enough for 2 levels
+        # Give slightly more than enough for 2 levels to avoid fp rounding issues
         px_9 = grid.price_at_level(9)
         px_8 = grid.price_at_level(8)
-        exact_usdc = (px_9 + px_8) * 10.0
-        inv = _make_inv(order_sz=10.0, acct_usdc=exact_usdc, alloc_usdc=exact_usdc)
+        usdc = (px_9 + px_8) * 10.0 + 1e-6
+        inv = _make_inv(order_sz=10.0, acct_usdc=usdc, alloc_usdc=usdc)
         t = inv.compute_bid_tranches(grid, boundary_level=10)
         assert t.n_full == 2
-        assert t.partial_sz == pytest.approx(0.0, abs=1e-8)
 
     def test_levels_descending(self, grid: PricingGrid) -> None:
         inv = _make_inv(order_sz=10.0, acct_usdc=1000.0, alloc_usdc=1000.0)

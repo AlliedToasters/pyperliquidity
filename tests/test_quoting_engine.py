@@ -116,8 +116,8 @@ class TestAskGeneration:
 class TestBidGeneration:
     def test_full_bids(self, grid: PricingGrid) -> None:
         # Give enough USDC for several full bids below boundary 5
-        # Levels 4, 3, 2, 1, 0 are available
-        usdc = sum(grid.price_at_level(i) * 1.0 for i in range(4, -1, -1))
+        # Levels 4, 3, 2, 1, 0 are available (+ epsilon for fp rounding)
+        usdc = sum(grid.price_at_level(i) * 1.0 for i in range(4, -1, -1)) + 1e-6
         orders = compute_desired_orders(
             grid=grid, boundary_level=5, effective_token=0.0,
             effective_usdc=usdc, order_sz=1.0,
