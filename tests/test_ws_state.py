@@ -10,6 +10,10 @@ from pyperliquidity.ws_state import WsState
 
 # --- Helpers ------------------------------------------------------------------
 
+BASE_TOKEN_NAME = "TESTBASE"
+"""Resolved base token name returned by spot_meta tokens list."""
+
+
 def _make_info(
     coin: str = "TEST",
     spot_index: int = 5,
@@ -22,24 +26,25 @@ def _make_info(
     """Build a mock SDK info object with configurable REST responses."""
     info = MagicMock()
 
+    # Build universe with filler entries; the target coin carries its real
+    # spot index (not the array position) and a token reference.
+    base_token_idx = 0  # index into the top-level "tokens" list
+    universe = [
+        {"name": f"COIN{i}", "index": i, "tokens": [i + 1]}
+        for i in range(spot_index)
+    ]
+    universe.append({"name": coin, "index": spot_index, "tokens": [base_token_idx]})
     info.spot_meta.return_value = {
-        "universe": [
-            {"name": "OTHER"},
-            *([{"name": coin}] if spot_index == 1 else []),
-            *([{"name": f"FILLER{i}"} for i in range(2, spot_index)]),
-            *([{"name": coin}] if spot_index != 1 else []),
-        ],
+        "universe": universe,
+        "tokens": [{"name": BASE_TOKEN_NAME}],
     }
-    # Simplify: just put the coin at the right index
-    universe = [{"name": f"COIN{i}"} for i in range(spot_index)]
-    universe.append({"name": coin})
-    info.spot_meta.return_value = {"universe": universe}
 
     info.open_orders.return_value = open_orders or []
 
+    # Balances use the base token name (e.g. "THC"), not the pair name ("@1434")
     info.spot_user_state.return_value = {
         "balances": [
-            {"coin": coin, "total": str(token_bal)},
+            {"coin": BASE_TOKEN_NAME, "total": str(token_bal)},
             {"coin": "USDC", "total": str(usdc_bal)},
         ],
     }
@@ -102,7 +107,10 @@ async def test_startup_resolves_asset_id():
 async def test_startup_coin_not_found():
     """Raises ValueError if coin is not in spot_meta universe."""
     info = _make_info()
-    info.spot_meta.return_value = {"universe": [{"name": "OTHER"}]}
+    info.spot_meta.return_value = {
+        "universe": [{"name": "OTHER", "index": 0, "tokens": [0]}],
+        "tokens": [{"name": "OTHERBASE"}],
+    }
 
     ws, _, _ = _make_ws_state(info=info)
 
@@ -279,7 +287,7 @@ async def test_reconciliation_updates_balances():
     # Update the REST response to return different balances
     info.spot_user_state.return_value = {
         "balances": [
-            {"coin": "TEST", "total": "80.0"},
+            {"coin": BASE_TOKEN_NAME, "total": "80.0"},
             {"coin": "USDC", "total": "600.0"},
         ],
     }
@@ -380,7 +388,7 @@ async def test_balance_update_handler():
 
     msg = {
         "spotBalances": [
-            {"coin": "TEST", "total": "90.0"},
+            {"coin": BASE_TOKEN_NAME, "total": "90.0"},
             {"coin": "USDC", "total": "550.0"},
         ],
     }
