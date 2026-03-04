@@ -312,8 +312,8 @@ async def test_fill_callback_updates_order_state_and_inventory():
     )
     initial_token = ws.inventory.effective_token
 
-    # Simulate fill callback
-    fill_msg = [{"tid": 1001, "oid": 42, "sz": "10.0", "px": "1.015"}]
+    # Simulate fill callback (SDK sends nested dict)
+    fill_msg = {"user": "0xtest", "fills": [{"tid": 1001, "oid": 42, "sz": "10.0", "px": "1.015"}]}
     await ws._handle_fill(fill_msg)
 
     # Order should be removed (fully filled)
@@ -333,12 +333,13 @@ async def test_duplicate_fill_ignored():
     )
     assert ws.inventory is not None
 
-    # First fill — partial
-    await ws._handle_fill([{"tid": 1001, "oid": 42, "sz": "10.0", "px": "1.015"}])
+    # First fill — partial (SDK sends nested dict)
+    fill = {"tid": 1001, "oid": 42, "sz": "10.0", "px": "1.015"}
+    await ws._handle_fill({"user": "0xtest", "fills": [fill]})
     token_after_first = ws.inventory.account_token
 
     # Duplicate fill — should be ignored
-    await ws._handle_fill([{"tid": 1001, "oid": 42, "sz": "10.0", "px": "1.015"}])
+    await ws._handle_fill({"user": "0xtest", "fills": [fill]})
     assert ws.inventory.account_token == token_after_first
 
 
@@ -399,6 +400,37 @@ async def test_balance_update_handler():
     assert ws.inventory.account_usdc == 550.0
 
 
+async def test_fill_flat_list_still_works():
+    """Flat list of fills is still handled for backward compatibility."""
+    ws, _, _ = _make_ws_state(info=_make_info(token_bal=100.0, usdc_bal=500.0))
+    await ws._startup()
+
+    ws.order_state.on_place_confirmed(
+        oid=42, side="sell", level_index=5, price=1.015, size=10.0,
+    )
+
+    # Pass fills as flat list (not nested dict)
+    await ws._handle_fill([{"tid": 3001, "oid": 42, "sz": "10.0", "px": "1.015"}])
+
+    assert 42 not in ws.order_state.orders_by_oid
+
+
+async def test_fill_dict_without_fills_key_is_noop():
+    """A dict message without 'fills' key processes zero fills."""
+    ws, _, _ = _make_ws_state(info=_make_info(token_bal=100.0, usdc_bal=500.0))
+    await ws._startup()
+
+    ws.order_state.on_place_confirmed(
+        oid=42, side="sell", level_index=5, price=1.015, size=10.0,
+    )
+
+    # Dict with no "fills" key — should not crash or process anything
+    await ws._handle_fill({"user": "0xtest"})
+
+    # Order should still be there
+    assert 42 in ws.order_state.orders_by_oid
+
+
 async def test_fill_updates_rate_limit_budget():
     """Fill events add volume to rate limit budget."""
     ws, _, _ = _make_ws_state(info=_make_info(cum_vlm=1000.0, n_requests=100))
@@ -409,7 +441,8 @@ async def test_fill_updates_rate_limit_budget():
     )
     initial_vlm = ws.rate_limit.cum_vlm
 
-    await ws._handle_fill([{"tid": 2001, "oid": 42, "sz": "10.0", "px": "2.0"}])
+    fill = {"tid": 2001, "oid": 42, "sz": "10.0", "px": "2.0"}
+    await ws._handle_fill({"user": "0xtest", "fills": [fill]})
 
     # Volume should increase by px * sz = 2.0 * 10.0 = 20.0
     assert ws.rate_limit.cum_vlm == initial_vlm + 20.0

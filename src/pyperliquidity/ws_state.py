@@ -286,9 +286,13 @@ class WsState:
 
     async def _handle_fill(self, msg: Any) -> None:
         """Route userFills to OrderState → Inventory."""
-        if not isinstance(msg, list):
-            msg = [msg]
-        for fill in msg:
+        if isinstance(msg, dict):
+            fills = msg.get("fills", [])
+        elif isinstance(msg, list):
+            fills = msg
+        else:
+            return
+        for fill in fills:
             tid = fill.get("tid")
             oid = fill.get("oid")
             sz = float(fill.get("sz", 0))
