@@ -46,13 +46,30 @@ class EmitResult:
 
 # --- Response parsing ---------------------------------------------------------
 
-def _parse_statuses(response: Any) -> list[dict[str, Any]]:
-    """Extract the statuses array from an SDK batch response."""
+def _parse_statuses(response: Any, expected: int) -> list[dict[str, Any]]:
+    """Extract the statuses array from an SDK batch response.
+
+    When the exchange returns fewer statuses than *expected* (batch was
+    truncated on first error), the first error is propagated to all
+    remaining positions so callers don't silently swallow them.
+    """
     if isinstance(response, dict) and response.get("status") == "ok":
         data = response.get("response", {}).get("data", {})
         statuses: list[dict[str, Any]] = data.get("statuses", [])
+        if len(statuses) < expected:
+            first_error: dict[str, Any] | None = next(
+                (s for s in statuses if "error" in s), None
+            )
+            fill = first_error if first_error is not None else {"error": "batch truncated"}
+            if statuses:
+                logger.warning(
+                    "Truncated batch response: got %d statuses for %d requests, "
+                    "propagating error: %s",
+                    len(statuses), expected, fill.get("error"),
+                )
+            statuses.extend([fill] * (expected - len(statuses)))
         return statuses
-    return []
+    return [{"error": "batch request failed"}] * expected
 
 
 def _is_alo_rejection(error_msg: str) -> bool:
@@ -198,7 +215,7 @@ class BatchEmitter:
         finally:
             budget.on_request()
 
-        statuses = _parse_statuses(response)
+        statuses = _parse_statuses(response, expected=len(cancel_oids))
         n_ok = n_err = 0
 
         for i, oid in enumerate(cancel_oids):
@@ -248,7 +265,7 @@ class BatchEmitter:
         finally:
             budget.on_request()
 
-        statuses = _parse_statuses(response)
+        statuses = _parse_statuses(response, expected=len(modifies))
         n_ok = n_err = 0
 
         for i, (original_oid, desired) in enumerate(modifies):
@@ -268,11 +285,17 @@ class BatchEmitter:
                     order.size = desired.size
                 n_ok += 1
             elif "error" in status:
+                error_msg = status["error"]
                 self._order_state.on_modify_response(
                     original_oid=original_oid,
                     new_oid=None,
-                    status=f"error: {status['error']}",
+                    status=f"error: {error_msg}",
                 )
+                # on_modify_response only removes on "Cannot modify";
+                # for other errors (including batch truncation) the order
+                # state is uncertain, so clean up defensively.
+                if "Cannot modify" not in error_msg:
+                    self._order_state.remove_ghost(original_oid)
                 n_err += 1
             else:
                 logger.warning(
@@ -305,7 +328,7 @@ class BatchEmitter:
         finally:
             budget.on_request()
 
-        statuses = _parse_statuses(response)
+        statuses = _parse_statuses(response, expected=len(places))
         n_ok = n_err = 0
 
         for i, desired in enumerate(places):
