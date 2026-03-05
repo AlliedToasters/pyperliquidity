@@ -64,6 +64,33 @@ class TestDeadZone:
         assert len(diff.modifies) == 1
         assert diff.modifies[0] == (1, desired[0])
 
+    def test_structural_change_bypasses_dead_zone(self):
+        """When keys differ (fill removed a level, new level added), dead zone
+        is bypassed even if price drift is negligible."""
+        # 19 current orders: levels 0-9 bids, levels 11-19 asks (level 10 filled)
+        current = []
+        for i in range(10):
+            current.append(_tracked(i + 1, "buy", i, 100.0 - i * 0.3, 10.0))
+        for i in range(11, 20):
+            current.append(_tracked(i + 1, "sell", i, 100.0 + i * 0.3, 10.0))
+
+        # 20 desired orders: levels 0-9 bids (including new bid at 10), levels 11-19 asks
+        # Level 10 now a bid (the filled ask flipped to bid side)
+        desired = []
+        for i in range(11):  # bids at 0-10
+            desired.append(_desired("buy", i, 100.0 - i * 0.3, 10.0))
+        for i in range(11, 20):  # asks at 11-19
+            desired.append(_desired("sell", i, 100.0 + i * 0.3, 10.0))
+
+        # Use a very generous dead zone — should be bypassed due to structural change
+        diff = compute_diff(desired, current, dead_zone_bps=100.0,
+                            price_tolerance_bps=1.0, size_tolerance_pct=5.0)
+
+        # The diff must NOT be empty — it should place the new bid at level 10
+        assert diff != OrderDiff()
+        placed_levels = {p.level_index for p in diff.places}
+        assert 10 in placed_levels
+
 
 # ---------------------------------------------------------------------------
 # 3.3  Dead zone bypass: empty lists
