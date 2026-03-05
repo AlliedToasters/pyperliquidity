@@ -16,6 +16,42 @@ def _default_round(px: float) -> float:
     return round(px, 5 - magnitude)
 
 
+def generate_ask_levels(
+    mid_price: float,
+    n_orders: int,
+    tick_size: float = 0.003,
+    round_fn: Callable[[float], float] = _default_round,
+) -> tuple[float, ...]:
+    """Generate *n_orders* ask price levels starting at ``round(mid_price)``.
+
+    ask[0] = round(mid_price), ask[i] = round(ask[i-1] * (1 + tick_size)).
+    """
+    if n_orders <= 0:
+        return ()
+    levels: list[float] = [round_fn(mid_price)]
+    for _ in range(n_orders - 1):
+        levels.append(round_fn(levels[-1] * (1 + tick_size)))
+    return tuple(levels)
+
+
+def generate_bid_levels(
+    mid_price: float,
+    n_orders: int,
+    tick_size: float = 0.003,
+    round_fn: Callable[[float], float] = _default_round,
+) -> tuple[float, ...]:
+    """Generate *n_orders* bid price levels starting below mid.
+
+    bid[0] = round(mid / (1 + tick_size)), bid[i] = round(bid[i-1] / (1 + tick_size)).
+    """
+    if n_orders <= 0:
+        return ()
+    levels: list[float] = [round_fn(mid_price / (1 + tick_size))]
+    for _ in range(n_orders - 1):
+        levels.append(round_fn(levels[-1] / (1 + tick_size)))
+    return tuple(levels)
+
+
 @dataclass(frozen=True)
 class PricingGrid:
     """Immutable geometric price grid for HIP-2 market making.

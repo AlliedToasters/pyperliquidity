@@ -1,7 +1,7 @@
-"""Integration tests: verify all n_orders levels stay covered after fills.
+"""Integration tests: verify pricing recenters on fills and maintains 2n orders.
 
 Uses MockExchange/MockInfo for realistic multi-tick simulation of the
-fill → boundary shift → requote → emit pipeline.
+fill → inventory update → requote → emit pipeline.
 """
 
 from __future__ import annotations
@@ -11,15 +11,13 @@ from tests.mock_exchange import MockExchange, MockInfo
 
 # --- Config -------------------------------------------------------------------
 
-N_ORDERS = 20
-N_SEEDED = 10
+N_ORDERS = 10  # per side
 ORDER_SZ = 10.0
-START_PX = 1.0
 TOKEN_BAL = 10_000.0  # generous — never balance-limited
 USDC_BAL = 100_000.0
 
-
 # --- Helpers ------------------------------------------------------------------
+
 
 def _make_system() -> tuple[WsState, MockExchange, MockInfo]:
     """Build a WsState wired to MockExchange/MockInfo."""
@@ -33,10 +31,8 @@ def _make_system() -> tuple[WsState, MockExchange, MockInfo]:
     )
     ws = WsState(
         coin="TEST",
-        start_px=START_PX,
         n_orders=N_ORDERS,
         order_sz=ORDER_SZ,
-        n_seeded_levels=N_SEEDED,
         info=info,
         exchange=ex,
         address="0xtest",
@@ -49,154 +45,122 @@ def _make_system() -> tuple[WsState, MockExchange, MockInfo]:
     return ws, ex, info
 
 
-def _assert_full_coverage(ws: WsState, n_orders: int) -> None:
-    """Assert every level 0..n_orders-1 has exactly one order in order_state."""
-    covered_levels: dict[int, str] = {}
-    for o in ws.order_state.orders_by_oid.values():
-        assert o.level_index not in covered_levels, (
-            f"Duplicate order at level {o.level_index}: "
-            f"side={o.side} vs {covered_levels[o.level_index]}"
-        )
-        covered_levels[o.level_index] = o.side
-
-    total = len(covered_levels)
-    assert total == n_orders, (
-        f"Expected {n_orders} covered levels, got {total}. "
-        f"Missing: {set(range(n_orders)) - set(covered_levels.keys())}"
-    )
-
-    # Verify structural consistency: asks at boundary and above, bids below
-    for lvl, side in covered_levels.items():
-        if lvl >= ws.boundary_level:
-            assert side == "sell", (
-                f"Level {lvl} >= boundary {ws.boundary_level} should be sell, got {side}"
-            )
-        else:
-            assert side == "buy", (
-                f"Level {lvl} < boundary {ws.boundary_level} should be buy, got {side}"
-            )
-
-
 async def _startup_and_initial_tick(ws: WsState) -> None:
     """Run startup and one tick to place initial orders."""
     await ws._startup()
     await ws._tick()
 
 
-def _find_oid_at_level(ws: WsState, level: int) -> int:
-    """Find the OID of the order at a given level."""
-    for o in ws.order_state.orders_by_oid.values():
-        if o.level_index == level:
-            return o.oid
-    raise ValueError(f"No order at level {level}")
+def _count_orders_by_side(ws: WsState) -> tuple[int, int]:
+    """Return (n_asks, n_bids) from current order state."""
+    asks = sum(1 for o in ws.order_state.orders_by_oid.values() if o.side == "sell")
+    bids = sum(1 for o in ws.order_state.orders_by_oid.values() if o.side == "buy")
+    return asks, bids
 
 
-async def _fill_boundary_ask(
-    ws: WsState, ex: MockExchange, tid: int,
-) -> None:
-    """Fill the ask at the current boundary level and process it."""
-    oid = _find_oid_at_level(ws, ws.boundary_level)
-    fill_event = ex.fill_order(oid, tid=tid)
-    await ws._handle_fill({"user": "0xtest", "fills": [fill_event]})
+def _find_ask_oid(ws: WsState) -> int:
+    """Find the OID of an ask order (lowest level_index = closest to mid)."""
+    asks = [o for o in ws.order_state.orders_by_oid.values() if o.side == "sell"]
+    if not asks:
+        raise ValueError("No ask orders found")
+    return min(asks, key=lambda o: o.level_index).oid
 
 
-async def _fill_boundary_bid(
-    ws: WsState, ex: MockExchange, tid: int,
-) -> None:
-    """Fill the bid at boundary_level - 1 and process it."""
-    bid_level = ws.boundary_level - 1
-    oid = _find_oid_at_level(ws, bid_level)
-    fill_event = ex.fill_order(oid, tid=tid)
-    await ws._handle_fill({"user": "0xtest", "fills": [fill_event]})
+def _find_bid_oid(ws: WsState) -> int:
+    """Find the OID of a bid order (lowest level_index = closest to mid)."""
+    bids = [o for o in ws.order_state.orders_by_oid.values() if o.side == "buy"]
+    if not bids:
+        raise ValueError("No bid orders found")
+    return min(bids, key=lambda o: o.level_index).oid
 
 
 # --- Tests --------------------------------------------------------------------
 
-async def test_single_ask_fill_maintains_coverage():
-    """Fill 1 ask at boundary → 20 orders remain after requote."""
+
+async def test_initial_2n_orders():
+    """After startup + tick, should have n_orders asks + n_orders bids = 2n total."""
     ws, ex, info = _make_system()
     await _startup_and_initial_tick(ws)
-    _assert_full_coverage(ws, N_ORDERS)
 
-    # Fill the ask at the boundary
-    await _fill_boundary_ask(ws, ex, tid=1)
+    n_asks, n_bids = _count_orders_by_side(ws)
+    assert n_asks == N_ORDERS
+    assert n_bids == N_ORDERS
+
+
+async def test_ask_fill_reprices():
+    """Fill an ask → mid shifts up → requote places new grid around new mid."""
+    ws, ex, info = _make_system()
+    await _startup_and_initial_tick(ws)
+
+    mid_before = ws._last_mid
+    ask_oid = _find_ask_oid(ws)
+
+    # Fill the closest ask
+    fill_event = ex.fill_order(ask_oid, tid=1)
+    await ws._handle_fill({"user": "0xtest", "fills": [fill_event]})
+
     # Tick to requote
     await ws._tick()
-    _assert_full_coverage(ws, N_ORDERS)
+
+    # Mid should have shifted (sold tokens → less tokens, more USDC → higher mid)
+    assert ws._last_mid > mid_before
+
+    # Should still have orders on both sides
+    n_asks, n_bids = _count_orders_by_side(ws)
+    assert n_asks > 0
+    assert n_bids > 0
 
 
-async def test_sequential_ask_fills_walk_boundary_up():
-    """Fill 5 asks sequentially → coverage maintained at each step."""
-    ws, ex, info = _make_system()
-    await _startup_and_initial_tick(ws)
-    _assert_full_coverage(ws, N_ORDERS)
-
-    for i in range(5):
-        await _fill_boundary_ask(ws, ex, tid=100 + i)
-        await ws._tick()
-        _assert_full_coverage(ws, N_ORDERS)
-
-
-async def test_sequential_bid_fills_walk_boundary_down():
-    """Fill 5 bids sequentially → coverage maintained at each step."""
-    ws, ex, info = _make_system()
-    await _startup_and_initial_tick(ws)
-    _assert_full_coverage(ws, N_ORDERS)
-
-    for i in range(5):
-        await _fill_boundary_bid(ws, ex, tid=200 + i)
-        await ws._tick()
-        _assert_full_coverage(ws, N_ORDERS)
-
-
-async def test_round_trip_coverage():
-    """Walk 3 up (ask fills), then 3 down (bid fills) → coverage at every step."""
-    ws, ex, info = _make_system()
-    await _startup_and_initial_tick(ws)
-    _assert_full_coverage(ws, N_ORDERS)
-
-    # Walk up 3
-    for i in range(3):
-        await _fill_boundary_ask(ws, ex, tid=300 + i)
-        await ws._tick()
-        _assert_full_coverage(ws, N_ORDERS)
-
-    # Walk down 3
-    for i in range(3):
-        await _fill_boundary_bid(ws, ex, tid=400 + i)
-        await ws._tick()
-        _assert_full_coverage(ws, N_ORDERS)
-
-
-async def test_all_asks_filled_becomes_all_bids():
-    """Fill all asks → boundary=n_orders, all orders are bids."""
+async def test_sequential_fills_symmetric():
+    """Fill 3 asks then 3 bids → orders exist on both sides throughout."""
     ws, ex, info = _make_system()
     await _startup_and_initial_tick(ws)
 
-    n_asks = N_ORDERS - N_SEEDED  # 10 asks initially
-    for i in range(n_asks):
-        await _fill_boundary_ask(ws, ex, tid=500 + i)
+    # Fill 3 asks
+    for tid in range(100, 103):
+        ask_oid = _find_ask_oid(ws)
+        fill_event = ex.fill_order(ask_oid, tid=tid)
+        await ws._handle_fill({"user": "0xtest", "fills": [fill_event]})
         await ws._tick()
 
-    assert ws.boundary_level == N_ORDERS
-    # All orders should be bids
-    for o in ws.order_state.orders_by_oid.values():
-        assert o.side == "buy", f"Expected all bids, got {o.side} at level {o.level_index}"
-    assert len(ws.order_state.orders_by_oid) == N_ORDERS
+        n_asks, n_bids = _count_orders_by_side(ws)
+        assert n_asks > 0, f"No asks after fill tid={tid}"
+        assert n_bids > 0, f"No bids after fill tid={tid}"
+
+    # Fill 3 bids
+    for tid in range(200, 203):
+        bid_oid = _find_bid_oid(ws)
+        fill_event = ex.fill_order(bid_oid, tid=tid)
+        await ws._handle_fill({"user": "0xtest", "fills": [fill_event]})
+        await ws._tick()
+
+        n_asks, n_bids = _count_orders_by_side(ws)
+        assert n_asks > 0, f"No asks after fill tid={tid}"
+        assert n_bids > 0, f"No bids after fill tid={tid}"
 
 
-async def test_all_bids_filled_becomes_all_asks():
-    """Fill all bids → boundary=0, all orders are asks."""
+async def test_round_trip():
+    """Sell then buy back → mid returns close to original."""
     ws, ex, info = _make_system()
     await _startup_and_initial_tick(ws)
 
-    n_bids = N_SEEDED  # 10 bids initially
-    for i in range(n_bids):
-        await _fill_boundary_bid(ws, ex, tid=600 + i)
-        await ws._tick()
+    mid_initial = ws._last_mid
 
-    assert ws.boundary_level == 0
-    # All orders should be asks
-    for o in ws.order_state.orders_by_oid.values():
-        assert o.side == "sell", f"Expected all asks, got {o.side} at level {o.level_index}"
-    assert len(ws.order_state.orders_by_oid) == N_ORDERS
+    # Sell one tranche
+    ask_oid = _find_ask_oid(ws)
+    fill_event = ex.fill_order(ask_oid, tid=300)
+    await ws._handle_fill({"user": "0xtest", "fills": [fill_event]})
+    await ws._tick()
+
+    mid_after_sell = ws._last_mid
+    assert mid_after_sell > mid_initial
+
+    # Buy one tranche
+    bid_oid = _find_bid_oid(ws)
+    fill_event = ex.fill_order(bid_oid, tid=301)
+    await ws._handle_fill({"user": "0xtest", "fills": [fill_event]})
+    await ws._tick()
+
+    mid_after_buy = ws._last_mid
+    # Mid should be close to initial (not exact due to spread)
+    assert abs(mid_after_buy - mid_initial) / mid_initial < 0.01

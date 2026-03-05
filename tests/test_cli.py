@@ -16,7 +16,7 @@ from pyperliquidity.cli import _build_ws_state, _load_config, _load_env, _valida
 
 VALID_CONFIG = {
     "market": {"coin": "PURR", "testnet": False},
-    "strategy": {"start_px": 0.10, "n_orders": 10, "order_sz": 100.0, "n_seeded_levels": 5},
+    "strategy": {"n_orders": 10, "order_sz": 100.0},
     "allocation": {"allocated_token": 1000.0, "allocated_usdc": 500.0},
 }
 
@@ -107,11 +107,6 @@ class TestValidateConfig:
         with pytest.raises(SystemExit, match="market.coin"):
             _validate_config(cfg)
 
-    def test_zero_start_px(self) -> None:
-        cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "start_px": 0}}
-        with pytest.raises(SystemExit, match="start_px"):
-            _validate_config(cfg)
-
     def test_negative_order_sz(self) -> None:
         cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "order_sz": -1}}
         with pytest.raises(SystemExit, match="order_sz"):
@@ -158,7 +153,6 @@ class TestValidateConfig:
         with pytest.raises(SystemExit, match="market.coin") as exc_info:
             _validate_config(cfg)
         msg = str(exc_info.value)
-        assert "start_px" in msg
         assert "n_orders" in msg
 
 

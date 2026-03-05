@@ -1,17 +1,21 @@
-"""Quoting engine — pure function: inventory + grid → desired orders.
+"""Quoting engine — pure function: inventory → desired orders.
 
-No I/O, no side effects. This is the HIP-2 algorithm: given a price grid,
-current balances, and boundary level, produce the deterministic set of
-desired resting orders.
+No I/O, no side effects. Price is derived from inventory (USDC / tokens),
+grid recenters on mid each tick, and n_orders are placed per side.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from pyperliquidity.pricing_grid import PricingGrid
+from pyperliquidity.pricing_grid import (
+    _default_round,
+    generate_ask_levels,
+    generate_bid_levels,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,86 +28,113 @@ class DesiredOrder:
     size: float
 
 
+@dataclass(frozen=True, slots=True)
+class QuoteResult:
+    """Result of the quoting engine computation."""
+
+    mid_price: float
+    effective_order_sz: float
+    effective_n_orders: int
+    orders: list[DesiredOrder]
+
+
 def compute_desired_orders(
-    grid: PricingGrid,
-    boundary_level: int,
     effective_token: float,
     effective_usdc: float,
     order_sz: float,
+    n_orders: int,
     min_notional: float = 0.0,
-) -> list[DesiredOrder]:
-    """Compute the desired set of resting orders from inventory state.
+    tick_size: float = 0.003,
+    round_fn: Callable[[float], float] = _default_round,
+) -> QuoteResult:
+    """Compute desired resting orders from inventory state.
+
+    Price is derived from inventory: ``mid = round(usdc / tokens)``.
+    Grid recenters on mid each tick with n_orders per side.
 
     Parameters
     ----------
-    grid : PricingGrid
-        The geometric price grid.
-    boundary_level : int
-        Grid index of the lowest ask level.  Asks are placed at
-        ``boundary_level`` and above; bids at ``boundary_level - 1`` and below.
     effective_token : float
         Effective token balance available for ask orders.
     effective_usdc : float
         Effective USDC balance available for bid orders.
     order_sz : float
         Size of a full order tranche.
+    n_orders : int
+        Number of orders **per side**.
     min_notional : float
-        Minimum ``price * size`` for an order to be emitted.  Orders below
-        this threshold are filtered out.
+        Minimum ``price * size`` for an order. When binding, increases
+        effective_order_sz and may reduce effective_n_orders.
+    tick_size : float
+        Multiplicative spacing between levels (default 0.3%).
+    round_fn : Callable
+        Rounding function applied to prices.
 
     Returns
     -------
-    list[DesiredOrder]
-        Deterministic list of desired orders (asks then bids).
+    QuoteResult
+        Mid price, effective params, and deterministic list of desired orders.
     """
+    # Edge case: need both sides to derive mid
+    if effective_token <= 0 or effective_usdc <= 0:
+        return QuoteResult(
+            mid_price=0.0,
+            effective_order_sz=order_sz,
+            effective_n_orders=n_orders,
+            orders=[],
+        )
+
+    mid_price = round_fn(effective_usdc / effective_token)
+
+    # Min notional adjustment
+    eff_order_sz = order_sz
+    eff_n_orders = n_orders
+    if min_notional > 0 and mid_price * order_sz < min_notional:
+        eff_order_sz = min_notional / mid_price
+        max_asks = math.floor(effective_token / eff_order_sz) if eff_order_sz > 0 else 0
+        max_bids = math.floor(effective_usdc / (eff_order_sz * mid_price)) if mid_price > 0 else 0
+        eff_n_orders = min(n_orders, max_asks, max_bids)
+
+    if eff_n_orders <= 0:
+        return QuoteResult(
+            mid_price=mid_price,
+            effective_order_sz=eff_order_sz,
+            effective_n_orders=0,
+            orders=[],
+        )
+
+    # Generate price levels
+    ask_levels = generate_ask_levels(mid_price, eff_n_orders, tick_size, round_fn)
+    bid_levels = generate_bid_levels(mid_price, eff_n_orders, tick_size, round_fn)
+
     orders: list[DesiredOrder] = []
 
-    max_level = len(grid.levels) - 1
+    # --- Ask side ---
+    remaining_token = effective_token
+    for i, px in enumerate(ask_levels):
+        if remaining_token <= 0:
+            break
+        sz = min(eff_order_sz, remaining_token)
+        orders.append(DesiredOrder(side="sell", level_index=i, price=px, size=sz))
+        remaining_token -= sz
 
-    # --- Ask side: ascending from boundary_level ---
-    if effective_token > 0 and order_sz > 0:
-        n_full = math.floor(effective_token / order_sz)
-        partial = effective_token - n_full * order_sz
-        # Clamp tiny negatives from float arithmetic
-        if partial < 0:
-            partial = 0.0
+    # --- Bid side ---
+    remaining_usdc = effective_usdc
+    for i, px in enumerate(bid_levels):
+        if remaining_usdc <= 0 or px <= 0:
+            break
+        cost = eff_order_sz * px
+        if remaining_usdc >= cost:
+            orders.append(DesiredOrder(side="buy", level_index=i, price=px, size=eff_order_sz))
+            remaining_usdc -= cost
+        else:
+            partial_sz = remaining_usdc / px
+            orders.append(DesiredOrder(side="buy", level_index=i, price=px, size=partial_sz))
+            remaining_usdc = 0
 
-        for i in range(n_full):
-            lvl = boundary_level + i
-            if lvl > max_level:
-                break
-            px = grid.price_at_level(lvl)
-            orders.append(DesiredOrder(side="sell", level_index=lvl, price=px, size=order_sz))
-
-        if partial > 0:
-            partial_lvl = boundary_level + n_full
-            if partial_lvl <= max_level:
-                px = grid.price_at_level(partial_lvl)
-                orders.append(
-                    DesiredOrder(side="sell", level_index=partial_lvl, price=px, size=partial)
-                )
-
-    # --- Bid side: descending from boundary_level - 1 ---
-    if effective_usdc > 0 and order_sz > 0:
-        available = effective_usdc
-        for lvl in range(boundary_level - 1, -1, -1):
-            px = grid.price_at_level(lvl)
-            cost = px * order_sz
-            if available >= cost:
-                orders.append(
-                    DesiredOrder(side="buy", level_index=lvl, price=px, size=order_sz)
-                )
-                available -= cost
-            else:
-                if available > 0 and px > 0:
-                    partial_sz = available / px
-                    orders.append(
-                        DesiredOrder(side="buy", level_index=lvl, price=px, size=partial_sz)
-                    )
-                break
-
-    # --- Minimum notional filter ---
-    if min_notional > 0:
-        orders = [o for o in orders if o.price * o.size >= min_notional]
-
-    return orders
+    return QuoteResult(
+        mid_price=mid_price,
+        effective_order_sz=eff_order_sz,
+        effective_n_orders=eff_n_orders,
+        orders=orders,
+    )
