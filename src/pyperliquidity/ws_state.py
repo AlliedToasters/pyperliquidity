@@ -293,6 +293,8 @@ class WsState:
             oid = fill.get("oid")
             sz = float(fill.get("sz", 0))
             px = float(fill.get("px", 0))
+            fee = float(fill.get("fee", 0))
+            fee_token = fill.get("feeToken", "USDC")
             if tid is None or oid is None:
                 continue
 
@@ -301,9 +303,13 @@ class WsState:
                 volume_usd = px * sz
                 self.rate_limit.on_fill(volume_usd)
                 if result.side == "sell":
-                    self.inventory.on_ask_fill(px=px, sz=sz)
+                    self.inventory.on_ask_fill(
+                        px=px, sz=sz, fee=fee, fee_token=fee_token,
+                    )
                 else:
-                    self.inventory.on_bid_fill(px=px, sz=sz)
+                    self.inventory.on_bid_fill(
+                        px=px, sz=sz, fee=fee, fee_token=fee_token,
+                    )
 
     async def _handle_balance_update(self, msg: Any) -> None:
         """Route webData2 balance updates to Inventory."""

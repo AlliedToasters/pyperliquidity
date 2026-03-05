@@ -270,7 +270,11 @@ async def test_reconciliation_updates_balances():
 
 async def test_fill_callback_updates_order_state_and_inventory():
     """userFills callback routes to OrderState.on_fill → Inventory."""
-    ws, _, _ = _make_ws_state(info=_make_info(token_bal=100.0, usdc_bal=500.0))
+    ws, _, _ = _make_ws_state(
+        info=_make_info(token_bal=100.0, usdc_bal=500.0),
+        allocated_token=100.0,
+        allocated_usdc=500.0,
+    )
     await ws._startup()
 
     # Place an ask order in state
@@ -287,12 +291,16 @@ async def test_fill_callback_updates_order_state_and_inventory():
     assert 42 not in ws.order_state.orders_by_oid
     # Inventory should reflect the fill (sold tokens, gained USDC)
     assert ws.inventory is not None
-    assert ws.inventory.account_token < initial_token
+    assert ws.inventory.virtual_token < initial_token
 
 
 async def test_duplicate_fill_ignored():
     """Duplicate tid is ignored by OrderState dedup."""
-    ws, _, _ = _make_ws_state(info=_make_info(token_bal=100.0, usdc_bal=500.0))
+    ws, _, _ = _make_ws_state(
+        info=_make_info(token_bal=100.0, usdc_bal=500.0),
+        allocated_token=100.0,
+        allocated_usdc=500.0,
+    )
     await ws._startup()
 
     ws.order_state.on_place_confirmed(
@@ -303,11 +311,11 @@ async def test_duplicate_fill_ignored():
     # First fill — partial (SDK sends nested dict)
     fill = {"tid": 1001, "oid": 42, "sz": "10.0", "px": "1.015"}
     await ws._handle_fill({"user": "0xtest", "fills": [fill]})
-    token_after_first = ws.inventory.account_token
+    token_after_first = ws.inventory.virtual_token
 
     # Duplicate fill — should be ignored
     await ws._handle_fill({"user": "0xtest", "fills": [fill]})
-    assert ws.inventory.account_token == token_after_first
+    assert ws.inventory.virtual_token == token_after_first
 
 
 async def test_order_update_resting_adds_to_state():

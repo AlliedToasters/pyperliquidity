@@ -41,6 +41,8 @@ def _make_system() -> tuple[WsState, MockExchange, MockInfo]:
         price_tolerance_bps=1.0,
         size_tolerance_pct=1.0,
         reconcile_every=100,
+        allocated_token=TOKEN_BAL,
+        allocated_usdc=USDC_BAL,
     )
     return ws, ex, info
 
