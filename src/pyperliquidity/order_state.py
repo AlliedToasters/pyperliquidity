@@ -38,6 +38,7 @@ class FillResult:
     """Returned by on_fill so the caller can update inventory."""
 
     side: Literal["buy", "sell"]
+    level_index: int
     price: float
     size: float
     fully_filled: bool
@@ -185,6 +186,7 @@ class OrderState:
 
         result = FillResult(
             side=order.side,
+            level_index=order.level_index,
             price=order.price,
             size=fill_sz,
             fully_filled=fully_filled,
