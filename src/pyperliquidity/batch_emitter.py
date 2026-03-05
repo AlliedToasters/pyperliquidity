@@ -208,7 +208,7 @@ class BatchEmitter:
         cancel_oids: list[int],
         budget: RateLimitBudget,
     ) -> tuple[int, int]:
-        reqs = [{"a": self.asset_id, "o": oid} for oid in cancel_oids]
+        reqs = [{"coin": self.coin, "o": oid} for oid in cancel_oids]
 
         try:
             response = await asyncio.to_thread(self._exchange.bulk_cancel, reqs)
