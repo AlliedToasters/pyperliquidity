@@ -294,6 +294,35 @@ async def test_fill_callback_updates_order_state_and_inventory():
     assert ws.inventory.virtual_token < initial_token
 
 
+async def test_fill_sdk_wrapper_unwrapped():
+    """userFills from SDK wrapped in {"channel": ..., "data": {...}} are handled."""
+    ws, _, _ = _make_ws_state(
+        info=_make_info(token_bal=100.0, usdc_bal=500.0),
+        allocated_token=100.0,
+        allocated_usdc=500.0,
+    )
+    await ws._startup()
+
+    ws.order_state.on_place_confirmed(
+        oid=43, side="sell", level_index=5, price=1.015, size=10.0,
+    )
+    initial_token = ws.inventory.effective_token
+
+    # Full SDK wrapper format
+    fill_msg = {
+        "channel": "userFills",
+        "data": {
+            "user": "0xtest",
+            "fills": [{"tid": 1002, "oid": 43, "sz": "10.0", "px": "1.015"}],
+        },
+    }
+    await ws._handle_fill(fill_msg)
+
+    assert 43 not in ws.order_state.orders_by_oid
+    assert ws.inventory is not None
+    assert ws.inventory.virtual_token < initial_token
+
+
 async def test_duplicate_fill_ignored():
     """Duplicate tid is ignored by OrderState dedup."""
     ws, _, _ = _make_ws_state(
@@ -336,6 +365,29 @@ async def test_order_update_resting_adds_to_state():
 
     assert 77 in ws.order_state.orders_by_oid
     assert ws.order_state.orders_by_oid[77].side == "buy"
+
+
+async def test_order_update_sdk_wrapper_unwrapped():
+    """orderUpdates from SDK wrapped in {"channel": ..., "data": [...]} are handled."""
+    ws, _, _ = _make_ws_state()
+    await ws._startup()
+
+    msg = {
+        "channel": "orderUpdates",
+        "data": [{
+            "status": "open",
+            "order": {
+                "oid": 78,
+                "side": "A",
+                "limitPx": "1.009",
+                "sz": "5.0",
+            },
+        }],
+    }
+    await ws._handle_order_update(msg)
+
+    assert 78 in ws.order_state.orders_by_oid
+    assert ws.order_state.orders_by_oid[78].side == "sell"
 
 
 async def test_order_update_accepts_open_status():
@@ -393,6 +445,28 @@ async def test_balance_update_handler():
     assert ws.inventory is not None
     assert ws.inventory.account_token == 90.0
     assert ws.inventory.account_usdc == 550.0
+
+
+async def test_balance_update_sdk_wrapper_unwrapped():
+    """webData2 from SDK wrapped in {"channel": ..., "data": {...}} is handled."""
+    ws, _, _ = _make_ws_state(info=_make_info(token_bal=100.0, usdc_bal=500.0))
+    await ws._startup()
+
+    msg = {
+        "channel": "webData2",
+        "data": {
+            "user": "0xtest",
+            "spotBalances": [
+                {"coin": BASE_TOKEN_NAME, "total": "80.0"},
+                {"coin": "USDC", "total": "600.0"},
+            ],
+        },
+    }
+    await ws._handle_balance_update(msg)
+
+    assert ws.inventory is not None
+    assert ws.inventory.account_token == 80.0
+    assert ws.inventory.account_usdc == 600.0
 
 
 async def test_fill_flat_list_still_works():

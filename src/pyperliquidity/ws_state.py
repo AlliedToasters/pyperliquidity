@@ -254,10 +254,19 @@ class WsState:
     # -- Async handlers --------------------------------------------------------
 
     async def _handle_order_update(self, msg: Any) -> None:
-        """Route orderUpdates to OrderState."""
-        if not isinstance(msg, list):
-            msg = [msg]
-        for update in msg:
+        """Route orderUpdates to OrderState.
+
+        The SDK passes the full WS message: ``{"channel": "orderUpdates", "data": [...]}``.
+        We unwrap ``data`` before iterating.
+        """
+        if isinstance(msg, dict):
+            data = msg.get("data")
+            updates = data if isinstance(data, list) else [msg]
+        elif isinstance(msg, list):
+            updates = msg
+        else:
+            return
+        for update in updates:
             status = update.get("status", "")
             order = update.get("order", {})
             oid = order.get("oid")
@@ -281,9 +290,20 @@ class WsState:
                 self.order_state.remove_ghost(oid)
 
     async def _handle_fill(self, msg: Any) -> None:
-        """Route userFills to OrderState → Inventory."""
+        """Route userFills to OrderState → Inventory.
+
+        The SDK passes the full WS message:
+        ``{"channel": "userFills", "data": {"user": "...", "fills": [...]}}``.
+        We unwrap ``data`` then extract ``fills``.
+        """
         if isinstance(msg, dict):
-            fills = msg.get("fills", [])
+            data = msg.get("data", msg)
+            if isinstance(data, dict):
+                fills = data.get("fills", [])
+            elif isinstance(data, list):
+                fills = data
+            else:
+                fills = []
         elif isinstance(msg, list):
             fills = msg
         else:
@@ -312,12 +332,19 @@ class WsState:
                     )
 
     async def _handle_balance_update(self, msg: Any) -> None:
-        """Route webData2 balance updates to Inventory."""
+        """Route webData2 balance updates to Inventory.
+
+        The SDK passes the full WS message:
+        ``{"channel": "webData2", "data": {"user": "...", "spotBalances": [...]}}``.
+        We unwrap ``data`` before extracting balances.
+        """
         if self.inventory is None:
             return
-        balances = msg if isinstance(msg, dict) else {}
-        # webData2 typically has a "clearinghouseState" or similar structure.
-        # Extract spot balances from the message.
+        if not isinstance(msg, dict):
+            return
+        balances = msg.get("data", msg)
+        if not isinstance(balances, dict):
+            return
         spot_balances = balances.get("spotBalances", balances.get("balances", []))
         if not isinstance(spot_balances, list):
             return
