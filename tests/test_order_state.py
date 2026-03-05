@@ -176,6 +176,7 @@ class TestPartialFill:
         assert result.fully_filled is False
         assert result.size == 3.0
         assert result.side == "sell"
+        assert result.level_index == 3
         assert result.price == 2.0
         # Order still in both indices with reduced size.
         assert 100 in state.orders_by_oid
@@ -199,6 +200,7 @@ class TestFullFill:
         assert result.fully_filled is True
         assert result.size == 10.0
         assert result.side == "buy"
+        assert result.level_index == 5
         assert result.price == 1.50
         assert 100 not in state.orders_by_oid
         assert ("buy", 5) not in state.orders_by_key

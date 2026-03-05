@@ -203,15 +203,24 @@ class WsState:
     def _compute_boundary_level(self) -> int:
         """Derive boundary_level from current order state.
 
-        The boundary is the lowest ask level.  If no asks exist,
-        defaults to n_seeded_levels.
+        Used at startup and for reconciliation validation.
+
+        - If asks exist → min(ask_levels)        (normal case)
+        - If only bids exist → max(bid_levels) + 1  (recovery: all asks filled)
+        - If no orders → n_seeded_levels           (cold start)
         """
-        ask_levels = [
-            o.level_index for o in self.order_state.orders_by_oid.values()
-            if o.side == "sell"
-        ]
+        ask_levels: list[int] = []
+        bid_levels: list[int] = []
+        for o in self.order_state.orders_by_oid.values():
+            if o.side == "sell":
+                ask_levels.append(o.level_index)
+            else:
+                bid_levels.append(o.level_index)
+
         if ask_levels:
             return min(ask_levels)
+        if bid_levels:
+            return min(max(bid_levels) + 1, self.n_orders)
         return self.n_seeded_levels
 
     # -- WebSocket subscriptions -----------------------------------------------
@@ -309,6 +318,23 @@ class WsState:
                 else:
                     self.inventory.on_bid_fill(px=px, sz=sz)
 
+                # Shift boundary on fully-filled boundary orders
+                if result.fully_filled:
+                    if (
+                        result.side == "sell"
+                        and result.level_index == self.boundary_level
+                    ):
+                        self.boundary_level = min(
+                            self.boundary_level + 1, self.n_orders,
+                        )
+                    elif (
+                        result.side == "buy"
+                        and result.level_index == self.boundary_level - 1
+                    ):
+                        self.boundary_level = max(
+                            self.boundary_level - 1, 0,
+                        )
+
     async def _handle_balance_update(self, msg: Any) -> None:
         """Route webData2 balance updates to Inventory."""
         if self.inventory is None:
@@ -337,8 +363,6 @@ class WsState:
         assert self.grid is not None
         assert self.inventory is not None
         assert self.emitter is not None
-
-        self.boundary_level = self._compute_boundary_level()
 
         desired = compute_desired_orders(
             grid=self.grid,
@@ -419,7 +443,16 @@ class WsState:
         if result.ghost_oids:
             logger.info("Reconciliation: removed %d ghosts", len(result.ghost_oids))
 
-        # 2. Reconcile balances
+        # 2. Validate boundary_level against derived value
+        derived_boundary = self._compute_boundary_level()
+        if derived_boundary != self.boundary_level:
+            logger.warning(
+                "Boundary drift: tracked=%d derived=%d, correcting",
+                self.boundary_level, derived_boundary,
+            )
+            self.boundary_level = derived_boundary
+
+        # 3. Reconcile balances
         spot_state = await asyncio.to_thread(
             self._info.spot_user_state, self._address,
         )
