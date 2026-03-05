@@ -2,7 +2,12 @@
 
 import pytest
 
-from pyperliquidity.pricing_grid import PricingGrid
+from pyperliquidity.pricing_grid import (
+    PricingGrid,
+    _default_round,
+    generate_ask_levels,
+    generate_bid_levels,
+)
 
 # --- 3.1 Standard grid generation ---
 
@@ -172,3 +177,76 @@ class TestImmutability:
         grid = PricingGrid(start_px=1.0, n_orders=5)
         with pytest.raises(AttributeError):
             grid._levels = (1.0, 2.0)  # type: ignore[misc]
+
+
+# --- 3.8 generate_ask_levels ---
+
+
+class TestGenerateAskLevels:
+    def test_correct_length(self) -> None:
+        levels = generate_ask_levels(mid_price=100.0, n_orders=5)
+        assert len(levels) == 5
+
+    def test_first_level_is_rounded_mid(self) -> None:
+        levels = generate_ask_levels(mid_price=100.0, n_orders=5)
+        assert levels[0] == _default_round(100.0)
+
+    def test_monotonically_increasing(self) -> None:
+        levels = generate_ask_levels(mid_price=100.0, n_orders=10)
+        for i in range(len(levels) - 1):
+            assert levels[i] < levels[i + 1]
+
+    def test_spacing_approximately_tick_size(self) -> None:
+        levels = generate_ask_levels(mid_price=100.0, n_orders=10)
+        for i in range(len(levels) - 1):
+            ratio = levels[i + 1] / levels[i]
+            assert abs(ratio - 1.003) < 0.001
+
+    def test_zero_n_orders(self) -> None:
+        levels = generate_ask_levels(mid_price=100.0, n_orders=0)
+        assert levels == ()
+
+    def test_returns_tuple(self) -> None:
+        levels = generate_ask_levels(mid_price=100.0, n_orders=3)
+        assert isinstance(levels, tuple)
+
+
+# --- 3.9 generate_bid_levels ---
+
+
+class TestGenerateBidLevels:
+    def test_correct_length(self) -> None:
+        levels = generate_bid_levels(mid_price=100.0, n_orders=5)
+        assert len(levels) == 5
+
+    def test_first_level_below_mid(self) -> None:
+        levels = generate_bid_levels(mid_price=100.0, n_orders=5)
+        assert levels[0] < 100.0
+
+    def test_first_level_is_mid_divided_by_tick(self) -> None:
+        mid = 100.0
+        levels = generate_bid_levels(mid_price=mid, n_orders=1)
+        assert levels[0] == _default_round(mid / 1.003)
+
+    def test_monotonically_decreasing(self) -> None:
+        levels = generate_bid_levels(mid_price=100.0, n_orders=10)
+        for i in range(len(levels) - 1):
+            assert levels[i] > levels[i + 1]
+
+    def test_spacing_approximately_tick_size(self) -> None:
+        levels = generate_bid_levels(mid_price=100.0, n_orders=10)
+        for i in range(len(levels) - 1):
+            ratio = levels[i] / levels[i + 1]
+            assert abs(ratio - 1.003) < 0.001
+
+    def test_zero_n_orders(self) -> None:
+        levels = generate_bid_levels(mid_price=100.0, n_orders=0)
+        assert levels == ()
+
+    def test_spread_is_one_tick(self) -> None:
+        """Best ask (ask[0]) and best bid (bid[0]) are one tick apart."""
+        mid = 100.0
+        asks = generate_ask_levels(mid_price=mid, n_orders=1)
+        bids = generate_bid_levels(mid_price=mid, n_orders=1)
+        ratio = asks[0] / bids[0]
+        assert abs(ratio - 1.003) < 0.001

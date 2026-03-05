@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pyperliquidity.inventory import Inventory, TrancheDecomposition
-from pyperliquidity.pricing_grid import PricingGrid
+from pyperliquidity.inventory import Inventory
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -25,10 +24,6 @@ def _make_inv(
         account_token=acct_token,
         account_usdc=acct_usdc,
     )
-
-
-def _make_grid(start_px: float = 1.0, n_orders: int = 20) -> PricingGrid:
-    return PricingGrid(start_px=start_px, n_orders=n_orders)
 
 
 # ===========================================================================
@@ -94,133 +89,7 @@ class TestAllocationUpdate:
 
 
 # ===========================================================================
-# 3. Ask-Side Tranche Decomposition
-# ===========================================================================
-
-
-class TestAskTranches:
-    def test_even_division(self) -> None:
-        inv = _make_inv(order_sz=10.0, acct_token=30.0, alloc_token=30.0)
-        t = inv.compute_ask_tranches()
-        assert t.n_full == 3
-        assert t.partial_sz == pytest.approx(0.0)
-
-    def test_remainder_partial(self) -> None:
-        inv = _make_inv(order_sz=10.0, acct_token=25.0, alloc_token=25.0)
-        t = inv.compute_ask_tranches()
-        assert t.n_full == 2
-        assert t.partial_sz == pytest.approx(5.0)
-
-    def test_less_than_one_tranche(self) -> None:
-        inv = _make_inv(order_sz=10.0, acct_token=3.0, alloc_token=3.0)
-        t = inv.compute_ask_tranches()
-        assert t.n_full == 0
-        assert t.partial_sz == pytest.approx(3.0)
-
-    def test_zero_balance(self) -> None:
-        inv = _make_inv(order_sz=10.0, acct_token=0.0, alloc_token=100.0)
-        t = inv.compute_ask_tranches()
-        assert t.n_full == 0
-        assert t.partial_sz == pytest.approx(0.0)
-
-    def test_invariant_n_full_times_order_sz_plus_partial(self) -> None:
-        for token in [0.0, 3.7, 10.0, 25.0, 100.0, 99.99]:
-            inv = _make_inv(order_sz=10.0, acct_token=token, alloc_token=token)
-            t = inv.compute_ask_tranches()
-            reconstructed = t.n_full * inv.order_sz + t.partial_sz
-            assert reconstructed == pytest.approx(inv.effective_token, abs=1e-10)
-
-    def test_effective_capped_by_allocation(self) -> None:
-        inv = _make_inv(order_sz=10.0, acct_token=100.0, alloc_token=25.0)
-        t = inv.compute_ask_tranches()
-        assert t.n_full == 2
-        assert t.partial_sz == pytest.approx(5.0)
-
-    def test_levels_empty(self) -> None:
-        inv = _make_inv(order_sz=10.0, acct_token=30.0, alloc_token=30.0)
-        t = inv.compute_ask_tranches()
-        assert t.levels == ()
-
-
-# ===========================================================================
-# 4. Bid-Side Tranche Decomposition
-# ===========================================================================
-
-
-class TestBidTranches:
-    @pytest.fixture()
-    def grid(self) -> PricingGrid:
-        return _make_grid(start_px=1.0, n_orders=20)
-
-    def test_multiple_full_bids_with_partial(self, grid: PricingGrid) -> None:
-        # Grid level 9 is the boundary; bids at levels 8, 7, 6, ...
-        inv = _make_inv(order_sz=10.0, acct_usdc=25.0, alloc_usdc=25.0)
-        t = inv.compute_bid_tranches(grid, boundary_level=10)
-        assert t.n_full == 2
-        assert t.partial_sz > 0.0
-        # Levels should be descending from boundary - 1
-        assert t.levels[0] == 9
-        assert t.levels[1] == 8
-        assert len(t.levels) == 3  # 2 full + 1 partial
-
-    def test_insufficient_for_one_full_bid(self, grid: PricingGrid) -> None:
-        inv = _make_inv(order_sz=10.0, acct_usdc=5.0, alloc_usdc=5.0)
-        t = inv.compute_bid_tranches(grid, boundary_level=10)
-        assert t.n_full == 0
-        assert t.partial_sz > 0.0
-        assert len(t.levels) == 1
-
-    def test_zero_usdc(self, grid: PricingGrid) -> None:
-        inv = _make_inv(order_sz=10.0, acct_usdc=0.0, alloc_usdc=100.0)
-        t = inv.compute_bid_tranches(grid, boundary_level=10)
-        assert t.n_full == 0
-        assert t.partial_sz == 0.0
-
-    def test_boundary_at_grid_edge_zero(self, grid: PricingGrid) -> None:
-        # Boundary at level 0 means no room for bids below
-        inv = _make_inv(order_sz=10.0, acct_usdc=100.0, alloc_usdc=100.0)
-        t = inv.compute_bid_tranches(grid, boundary_level=0)
-        assert t.n_full == 0
-        assert t.partial_sz == 0.0
-        assert t.levels == ()
-
-    def test_boundary_at_level_1(self, grid: PricingGrid) -> None:
-        # Only level 0 available for bids
-        px0 = grid.price_at_level(0)
-        inv = _make_inv(order_sz=10.0, acct_usdc=px0 * 10.0, alloc_usdc=px0 * 10.0)
-        t = inv.compute_bid_tranches(grid, boundary_level=1)
-        assert t.n_full == 1
-        assert t.partial_sz == pytest.approx(0.0)
-        assert t.levels == (0,)
-
-    def test_usdc_exhausted_exactly_at_level(self, grid: PricingGrid) -> None:
-        # Give slightly more than enough for 2 levels to avoid fp rounding issues
-        px_9 = grid.price_at_level(9)
-        px_8 = grid.price_at_level(8)
-        usdc = (px_9 + px_8) * 10.0 + 1e-6
-        inv = _make_inv(order_sz=10.0, acct_usdc=usdc, alloc_usdc=usdc)
-        t = inv.compute_bid_tranches(grid, boundary_level=10)
-        assert t.n_full == 2
-
-    def test_levels_descending(self, grid: PricingGrid) -> None:
-        inv = _make_inv(order_sz=10.0, acct_usdc=1000.0, alloc_usdc=1000.0)
-        t = inv.compute_bid_tranches(grid, boundary_level=10)
-        full_levels = t.levels[: t.n_full]
-        for i in range(len(full_levels) - 1):
-            assert full_levels[i] > full_levels[i + 1]
-
-    def test_effective_usdc_capped(self, grid: PricingGrid) -> None:
-        inv = _make_inv(order_sz=10.0, acct_usdc=500.0, alloc_usdc=25.0)
-        t = inv.compute_bid_tranches(grid, boundary_level=10)
-        # Same result as 25.0 USDC
-        inv2 = _make_inv(order_sz=10.0, acct_usdc=25.0, alloc_usdc=25.0)
-        t2 = inv2.compute_bid_tranches(grid, boundary_level=10)
-        assert t.n_full == t2.n_full
-        assert t.partial_sz == pytest.approx(t2.partial_sz)
-
-
-# ===========================================================================
-# 5. Fill Event Handlers
+# 3. Fill Event Handlers
 # ===========================================================================
 
 
@@ -247,30 +116,25 @@ class TestFillEvents:
         assert inv.account_token == pytest.approx(105.0)
         assert inv.effective_token == pytest.approx(100.0)  # clamped
 
-    def test_fill_sequence_shifting_boundary(self) -> None:
-        _make_grid(start_px=1.0, n_orders=20)
+    def test_fill_sequence(self) -> None:
         inv = _make_inv(
             order_sz=10.0,
             acct_token=50.0, alloc_token=50.0,
             acct_usdc=50.0, alloc_usdc=50.0,
         )
-        # Initial state
-        asks_before = inv.compute_ask_tranches()
-        assert asks_before.n_full == 5
 
         # Sell 20 tokens (2 ask fills)
         inv.on_ask_fill(px=1.05, sz=10.0)
         inv.on_ask_fill(px=1.06, sz=10.0)
 
-        asks_after = inv.compute_ask_tranches()
-        assert asks_after.n_full == 3
+        assert inv.effective_token == pytest.approx(30.0)
         # account_usdc increased but effective is capped by allocation
         assert inv.account_usdc > 50.0
         assert inv.effective_usdc == 50.0  # clamped to allocation
 
 
 # ===========================================================================
-# 6. Balance Reconciliation
+# 4. Balance Reconciliation
 # ===========================================================================
 
 
@@ -306,39 +170,11 @@ class TestBalanceReconciliation:
 
 
 # ===========================================================================
-# 7. Edge Cases and Integration
+# 5. Edge Cases and Integration
 # ===========================================================================
 
 
 class TestEdgeCases:
-    def test_zero_token_all_bids(self) -> None:
-        grid = _make_grid(start_px=1.0, n_orders=20)
-        inv = _make_inv(
-            order_sz=10.0,
-            acct_token=0.0, alloc_token=100.0,
-            acct_usdc=100.0, alloc_usdc=100.0,
-        )
-        asks = inv.compute_ask_tranches()
-        assert asks.n_full == 0
-        assert asks.partial_sz == 0.0
-
-        bids = inv.compute_bid_tranches(grid, boundary_level=10)
-        assert bids.n_full > 0
-
-    def test_zero_usdc_all_asks(self) -> None:
-        grid = _make_grid(start_px=1.0, n_orders=20)
-        inv = _make_inv(
-            order_sz=10.0,
-            acct_token=50.0, alloc_token=50.0,
-            acct_usdc=0.0, alloc_usdc=100.0,
-        )
-        asks = inv.compute_ask_tranches()
-        assert asks.n_full == 5
-
-        bids = inv.compute_bid_tranches(grid, boundary_level=10)
-        assert bids.n_full == 0
-        assert bids.partial_sz == 0.0
-
     def test_effective_never_exceeds_min_after_construction(self) -> None:
         for at, al in [(100, 50), (50, 100), (0, 100), (100, 0)]:
             inv = _make_inv(acct_token=float(at), alloc_token=float(al))
@@ -377,16 +213,3 @@ class TestEdgeCases:
             inv.update_allocation(token=float(al_t), usdc=float(al_u))
             assert inv.effective_token <= min(inv.allocated_token, inv.account_token)
             assert inv.effective_usdc <= min(inv.allocated_usdc, inv.account_usdc)
-
-
-class TestTrancheDecompositionDataclass:
-    def test_frozen(self) -> None:
-        t = TrancheDecomposition(n_full=3, partial_sz=1.5, levels=(0, 1, 2))
-        with pytest.raises(AttributeError):
-            t.n_full = 5  # type: ignore[misc]
-
-    def test_fields(self) -> None:
-        t = TrancheDecomposition(n_full=2, partial_sz=3.0, levels=(5, 4))
-        assert t.n_full == 2
-        assert t.partial_sz == 3.0
-        assert t.levels == (5, 4)
