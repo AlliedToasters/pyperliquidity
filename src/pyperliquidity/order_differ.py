@@ -62,25 +62,29 @@ def compute_diff(
     if not desired:
         return OrderDiff(cancels=[t.oid for t in current])
 
-    # --- Step 1: Dead-zone check ---
-    desired_mid = _weighted_mid_price(
-        [d.price for d in desired], [d.size for d in desired]
-    )
-    current_mid = _weighted_mid_price(
-        [c.price for c in current], [c.size for c in current]
-    )
-    if current_mid > 0.0:
-        drift_bps = abs(desired_mid - current_mid) / current_mid * 10_000
-        if drift_bps < dead_zone_bps:
-            return _EMPTY
-
-    # --- Step 2: Level-index matching ---
+    # --- Step 1: Level-index matching (build maps first for structural check) ---
     desired_by_key: dict[tuple[str, int], DesiredOrder] = {
         (d.side, d.level_index): d for d in desired
     }
     current_by_key: dict[tuple[str, int], TrackedOrder] = {
         (c.side, c.level_index): c for c in current
     }
+
+    # --- Step 2: Dead-zone check (bypassed on structural changes) ---
+    # Structural changes (new levels, removed levels, side flips) always
+    # propagate — the dead zone only suppresses price/size drift when
+    # the same set of (side, level_index) keys is present on both sides.
+    if desired_by_key.keys() == current_by_key.keys():
+        desired_mid = _weighted_mid_price(
+            [d.price for d in desired], [d.size for d in desired]
+        )
+        current_mid = _weighted_mid_price(
+            [c.price for c in current], [c.size for c in current]
+        )
+        if current_mid > 0.0:
+            drift_bps = abs(desired_mid - current_mid) / current_mid * 10_000
+            if drift_bps < dead_zone_bps:
+                return _EMPTY
 
     modifies: list[tuple[int, DesiredOrder]] = []
     places: list[DesiredOrder] = []
