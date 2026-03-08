@@ -13,6 +13,7 @@ from pyperliquidity.cli import (
     _build_ws_state,
     _cmd_grid,
     _config_to_toml,
+    _fetch_mid_px,
     _load_config,
     _load_env,
     _validate_config,
@@ -530,7 +531,7 @@ class TestGridSubcommand:
             coin="@1434",
             price_range=[350, 50000],
             liquidity_token=40,
-            target_px=None,
+            target_px=4000.0,
             tick_size=0.003,
             active_levels=20,
             testnet=True,
@@ -553,7 +554,7 @@ class TestGridSubcommand:
             coin="TEST",
             price_range=[100, 200],
             liquidity_token=50,
-            target_px=None,
+            target_px=150.0,
             tick_size=0.003,
             active_levels=None,
             testnet=False,
@@ -577,7 +578,7 @@ class TestGridSubcommand:
             coin="TEST",
             price_range=[200, 100],
             liquidity_token=50,
-            target_px=None,
+            target_px=150.0,
             tick_size=0.003,
             active_levels=None,
             testnet=False,
@@ -594,7 +595,7 @@ class TestGridSubcommand:
             coin="TEST",
             price_range=[100, 200],
             liquidity_token=50,
-            target_px=None,
+            target_px=150.0,
             tick_size=0.003,
             active_levels=10,
             testnet=False,
@@ -607,3 +608,131 @@ class TestGridSubcommand:
         assert "Grid levels:" in captured.err
         assert "Order size:" in captured.err
         assert "Active lvls: 10" in captured.err
+
+    @patch("pyperliquidity.cli._fetch_mid_px", return_value=508.0)
+    def test_fetches_mid_px_when_no_target_px(
+        self, mock_fetch: MagicMock, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When --target-px is omitted, fetch midPx from exchange."""
+        args = argparse.Namespace(
+            coin="@1434",
+            price_range=[350, 50000],
+            liquidity_token=40,
+            target_px=None,
+            tick_size=0.003,
+            active_levels=20,
+            testnet=True,
+            output=None,
+            sz_decimals=None,
+            min_notional=10.0,
+        )
+        _cmd_grid(args)
+        mock_fetch.assert_called_once_with("@1434", True)
+        captured = capsys.readouterr()
+        assert "508" in captured.err  # "Fetched mid price" message
+
+    @patch("pyperliquidity.cli._fetch_mid_px")
+    def test_target_px_skips_fetch(self, mock_fetch: MagicMock) -> None:
+        """When --target-px is provided, no HTTP call is made."""
+        args = argparse.Namespace(
+            coin="@1434",
+            price_range=[350, 50000],
+            liquidity_token=40,
+            target_px=500.0,
+            tick_size=0.003,
+            active_levels=20,
+            testnet=True,
+            output=None,
+            sz_decimals=None,
+            min_notional=10.0,
+        )
+        _cmd_grid(args)
+        mock_fetch.assert_not_called()
+
+
+class TestFetchMidPx:
+    """Tests for _fetch_mid_px."""
+
+    @patch("pyperliquidity.cli.requests.post")
+    def test_returns_mid_price(self, mock_post: MagicMock) -> None:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"@1434": "508.5", "PURR": "0.01"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        result = _fetch_mid_px("@1434", testnet=False)
+        assert result == 508.5
+        # Verify it called mainnet URL
+        call_args = mock_post.call_args
+        assert "/info" in call_args[0][0]
+        assert call_args[1]["json"] == {"type": "allMids"}
+
+    @patch("pyperliquidity.cli.requests.post")
+    def test_coin_not_found_exits(self, mock_post: MagicMock) -> None:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"PURR": "0.01"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        with pytest.raises(SystemExit, match="not found in allMids"):
+            _fetch_mid_px("@9999", testnet=False)
+
+    @patch("pyperliquidity.cli.requests.post", side_effect=Exception("connection refused"))
+    def test_network_error_exits(self, mock_post: MagicMock) -> None:
+        with pytest.raises(SystemExit, match="failed to fetch mid prices"):
+            _fetch_mid_px("@1434", testnet=True)
+
+    @patch("pyperliquidity.cli.requests.post")
+    def test_testnet_uses_testnet_url(self, mock_post: MagicMock) -> None:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"@1434": "500.0"}
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        _fetch_mid_px("@1434", testnet=True)
+        call_url = mock_post.call_args[0][0]
+        assert "testnet" in call_url.lower()
+
+
+class TestFloatFormatting:
+    """Verify TOML output doesn't contain float noise."""
+
+    def test_no_float_noise(self) -> None:
+        config = {
+            "market": {"coin": "@1434", "testnet": False},
+            "strategy": {
+                "n_orders": 100,
+                "order_sz": 40.011300000000006,
+                "start_px": 350.0,
+                "target_px": 508.123456789,
+            },
+            "allocation": {
+                "allocated_token": 39.999999999999993,
+                "allocated_usdc": 1234.5678901234,
+            },
+            "tuning": {"min_notional": 10.0},
+        }
+        toml_str = _config_to_toml(config)
+        # Should not contain the full noisy representation
+        assert "40.011300000000006" not in toml_str
+        assert "39.999999999999993" not in toml_str
+        # Should contain clean values
+        assert "40.0113" in toml_str
+        assert "40" in toml_str  # allocated_token rounds cleanly
+
+    def test_integer_like_floats_clean(self) -> None:
+        config = {
+            "market": {"coin": "TEST", "testnet": False},
+            "strategy": {
+                "n_orders": 10,
+                "order_sz": 5.0,
+                "start_px": 100.0,
+                "target_px": 150.0,
+            },
+            "allocation": {"allocated_token": 50.0, "allocated_usdc": 500.0},
+            "tuning": {},
+        }
+        toml_str = _config_to_toml(config)
+        # g format strips trailing zeros: 5.0 -> "5", 100.0 -> "100"
+        assert "order_sz = 5" in toml_str
+        assert "start_px = 100" in toml_str

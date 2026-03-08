@@ -11,6 +11,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+import requests
+
 logger = logging.getLogger(__name__)
 
 
@@ -204,9 +206,9 @@ def _config_to_toml(config: dict[str, Any]) -> str:
     s = config["strategy"]
     lines.append("[strategy]")
     lines.append(f"n_orders = {s['n_orders']}  # total grid levels")
-    lines.append(f"order_sz = {s['order_sz']}  # tokens per tranche")
-    lines.append(f"start_px = {s['start_px']}  # grid bottom price")
-    lines.append(f"target_px = {s['target_px']}  # initial cursor price")
+    lines.append(f"order_sz = {s['order_sz']:.10g}  # tokens per tranche")
+    lines.append(f"start_px = {s['start_px']:.10g}  # grid bottom price")
+    lines.append(f"target_px = {s['target_px']:.10g}  # initial cursor price")
     if "active_levels" in s:
         lines.append(f"active_levels = {s['active_levels']}  # max levels per side")
     lines.append("")
@@ -214,8 +216,8 @@ def _config_to_toml(config: dict[str, Any]) -> str:
     # [allocation]
     a = config["allocation"]
     lines.append("[allocation]")
-    lines.append(f"allocated_token = {a['allocated_token']}")
-    lines.append(f"allocated_usdc = {a['allocated_usdc']}")
+    lines.append(f"allocated_token = {a['allocated_token']:.8g}")
+    lines.append(f"allocated_usdc = {a['allocated_usdc']:.8g}")
     lines.append("")
 
     # [tuning]
@@ -268,11 +270,56 @@ def _cmd_run(args: argparse.Namespace) -> None:
     asyncio.run(ws_state.run())
 
 
+def _fetch_mid_px(coin: str, testnet: bool) -> float:
+    """Fetch the current mid price for *coin* from the Hyperliquid REST API.
+
+    Raises
+    ------
+    SystemExit
+        If the coin is not found in allMids or a network error occurs.
+    """
+    from hyperliquid.utils.constants import (
+        MAINNET_API_URL,
+        TESTNET_API_URL,
+    )
+
+    base_url = TESTNET_API_URL if testnet else MAINNET_API_URL
+    try:
+        resp = requests.post(
+            f"{base_url}/info",
+            json={"type": "allMids"},
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        mids: dict[str, str] = resp.json()
+    except Exception as exc:
+        sys.exit(
+            f"Error: failed to fetch mid prices from {base_url}: {exc}\n"
+            f"Pass --target-px explicitly to skip the API call."
+        )
+
+    mid_str = mids.get(coin)
+    if mid_str is None:
+        sys.exit(
+            f"Error: coin {coin!r} not found in allMids. "
+            f"Available coins: {', '.join(sorted(mids)[:20])}...\n"
+            f"Pass --target-px explicitly if the market has no trades yet."
+        )
+    return float(mid_str)
+
+
 def _cmd_grid(args: argparse.Namespace) -> None:
     """Handle the 'grid' subcommand — generate a config from market parameters."""
     from pyperliquidity.grid_generator import generate_grid_config
 
     min_px, max_px = args.price_range
+
+    # Fetch live mid price when --target-px is not provided
+    target_px = args.target_px
+    if target_px is None:
+        target_px = _fetch_mid_px(args.coin, args.testnet)
+        print(f"Fetched mid price for {args.coin}: {target_px}", file=sys.stderr)
 
     try:
         config, warnings = generate_grid_config(
@@ -280,7 +327,7 @@ def _cmd_grid(args: argparse.Namespace) -> None:
             min_px=min_px,
             max_px=max_px,
             liquidity_token=args.liquidity_token,
-            target_px=args.target_px,
+            target_px=target_px,
             tick_size=args.tick_size,
             active_levels=args.active_levels,
             testnet=args.testnet,
