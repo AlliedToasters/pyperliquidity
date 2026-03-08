@@ -4,7 +4,7 @@
 
 pyperliquidity is a Python implementation of Hyperliquid's HIP-2 "Hyperliquidity" on-chain market-making algorithm, reimplemented as an off-chain market maker for spot markets where HIP-2 cannot be deployed natively (e.g., bridged assets without genesis token allocations).
 
-**Core concept**: Uniswap V2 / infinite-range liquidity pools, but on a central-limit order book. Pricing emerges from inventory position on a geometric price grid — no oracle needed.
+**Core concept**: Uniswap V3 concentrated liquidity, but on a central-limit order book. You specify a finite price range via a geometric grid, and pricing emerges from inventory position — no oracle needed.
 
 ## Spec-Driven Development
 
