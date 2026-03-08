@@ -58,6 +58,9 @@ class WsState:
         Maximum token balance the strategy may use (``inf`` = full account).
     allocated_usdc : float
         Maximum USDC balance the strategy may use (``inf`` = full account).
+    active_levels : int | None
+        Maximum number of levels to place per side of the cursor.
+        When ``None``, all available levels get orders.
     """
 
     def __init__(
@@ -77,6 +80,7 @@ class WsState:
         min_notional: float = 0.0,
         allocated_token: float = float("inf"),
         allocated_usdc: float = float("inf"),
+        active_levels: int | None = None,
     ) -> None:
         self.coin = coin
         self.start_px = start_px
@@ -90,6 +94,7 @@ class WsState:
         self.min_notional = min_notional
         self._allocated_token = allocated_token
         self._allocated_usdc = allocated_usdc
+        self.active_levels = active_levels
 
         self._info = info
         self._exchange = exchange
@@ -355,6 +360,7 @@ class WsState:
             effective_usdc=self.inventory.effective_usdc,
             order_sz=self.order_sz,
             min_notional=self.min_notional,
+            active_levels=self.active_levels,
         )
 
         current = self.order_state.get_current_orders()
