@@ -375,7 +375,11 @@ class WsState:
         partial = eff_token % self.order_sz if eff_token > 0 else 0.0
         total_ask = min(n_full + (1 if partial > 0 else 0), self.grid.n_orders)
         cursor = self.grid.n_orders - total_ask
-        cursor_px = self.grid.price_at_level(cursor) if cursor < self.grid.n_orders else self.grid.levels[-1]
+        cursor_px = (
+            self.grid.price_at_level(cursor)
+            if cursor < self.grid.n_orders
+            else self.grid.levels[-1]
+        )
 
         logger.debug(
             "Tick %d: cursor=%d px=%.6f desired=%d current=%d | "

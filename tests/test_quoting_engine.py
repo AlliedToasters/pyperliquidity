@@ -10,7 +10,6 @@ import pytest
 from pyperliquidity.pricing_grid import PricingGrid
 from pyperliquidity.quoting_engine import DesiredOrder, compute_desired_orders
 
-
 # --- Helpers ------------------------------------------------------------------
 
 def _grid(n: int = 10, start_px: float = 1.0) -> PricingGrid:
@@ -148,11 +147,7 @@ class TestAskPlacement:
 
     def test_grid_overflow_truncation(self) -> None:
         """Asks exceeding grid max are truncated."""
-        grid = _grid(10)
-        # cursor=8, 5 full asks needed but only 2 levels available (8,9)
-        # 5000 tokens, order_sz=1000 but cursor at 8 → only 2 fit
-        # Actually: n_full=5, partial=0, total_ask=5, cursor=5
-        # Let me use different values: 2000 tokens, order_sz=1000, 3 levels
+        # 2000 tokens, order_sz=1000, 3 levels
         small_grid = _grid(3)
         # n_full=2, partial=0, total_ask=2, cursor=1
         orders = compute_desired_orders(small_grid, 2000.0, 50000.0, 1000.0)
