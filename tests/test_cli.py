@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import argparse
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pyperliquidity.cli import _build_ws_state, _load_config, _load_env, _validate_config
+from pyperliquidity.cli import (
+    _build_ws_state,
+    _cmd_grid,
+    _config_to_toml,
+    _load_config,
+    _load_env,
+    _validate_config,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -473,3 +481,129 @@ class TestBuildWsStateWithTargetPx:
         # 5 bid levels
         expected_usdc = sum(100.0 * grid.price_at_level(i) for i in range(5))
         assert abs(ws._allocated_usdc - expected_usdc) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# grid subcommand
+# ---------------------------------------------------------------------------
+
+
+class TestConfigToToml:
+    def test_basic_output(self) -> None:
+        config = {
+            "market": {"coin": "@1434", "testnet": True},
+            "strategy": {
+                "n_orders": 100,
+                "order_sz": 0.5,
+                "start_px": 350,
+                "target_px": 4000.0,
+                "active_levels": 20,
+            },
+            "allocation": {"allocated_token": 40.0, "allocated_usdc": 1000.0},
+            "tuning": {"min_notional": 10.0},
+        }
+        toml_str = _config_to_toml(config)
+        assert '[market]' in toml_str
+        assert 'coin = "@1434"' in toml_str
+        assert "testnet = true" in toml_str
+        assert "[strategy]" in toml_str
+        assert "n_orders = 100" in toml_str
+        assert "active_levels = 20" in toml_str
+        assert "[allocation]" in toml_str
+        assert "[tuning]" in toml_str
+
+    def test_no_active_levels(self) -> None:
+        config = {
+            "market": {"coin": "TEST", "testnet": False},
+            "strategy": {"n_orders": 10, "order_sz": 1.0, "start_px": 100, "target_px": 150.0},
+            "allocation": {"allocated_token": 10.0, "allocated_usdc": 500.0},
+            "tuning": {},
+        }
+        toml_str = _config_to_toml(config)
+        assert "active_levels" not in toml_str
+
+
+class TestGridSubcommand:
+    def test_basic_stdout(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Grid command outputs TOML to stdout."""
+        args = argparse.Namespace(
+            coin="@1434",
+            price_range=[350, 50000],
+            liquidity_token=40,
+            target_px=None,
+            tick_size=0.003,
+            active_levels=20,
+            testnet=True,
+            output=None,
+            sz_decimals=None,
+            min_notional=10.0,
+        )
+        _cmd_grid(args)
+        captured = capsys.readouterr()
+        assert "[market]" in captured.out
+        assert "@1434" in captured.out
+        assert "testnet = true" in captured.out
+        # Summary on stderr
+        assert "Grid config" in captured.err
+
+    def test_output_to_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """--output writes TOML to a file instead of stdout."""
+        out_file = tmp_path / "out.toml"
+        args = argparse.Namespace(
+            coin="TEST",
+            price_range=[100, 200],
+            liquidity_token=50,
+            target_px=None,
+            tick_size=0.003,
+            active_levels=None,
+            testnet=False,
+            output=str(out_file),
+            sz_decimals=None,
+            min_notional=10.0,
+        )
+        _cmd_grid(args)
+        captured = capsys.readouterr()
+        assert out_file.exists()
+        content = out_file.read_text()
+        assert "[market]" in content
+        # stdout should be empty (TOML goes to file)
+        assert "[market]" not in captured.out
+        # stderr should note the file was written
+        assert "Config written to" in captured.err
+
+    def test_invalid_range_exits(self) -> None:
+        """min >= max should exit with error."""
+        args = argparse.Namespace(
+            coin="TEST",
+            price_range=[200, 100],
+            liquidity_token=50,
+            target_px=None,
+            tick_size=0.003,
+            active_levels=None,
+            testnet=False,
+            output=None,
+            sz_decimals=None,
+            min_notional=10.0,
+        )
+        with pytest.raises(SystemExit, match="must be less than"):
+            _cmd_grid(args)
+
+    def test_summary_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Summary info appears on stderr."""
+        args = argparse.Namespace(
+            coin="TEST",
+            price_range=[100, 200],
+            liquidity_token=50,
+            target_px=None,
+            tick_size=0.003,
+            active_levels=10,
+            testnet=False,
+            output=None,
+            sz_decimals=None,
+            min_notional=10.0,
+        )
+        _cmd_grid(args)
+        captured = capsys.readouterr()
+        assert "Grid levels:" in captured.err
+        assert "Order size:" in captured.err
+        assert "Active lvls: 10" in captured.err
