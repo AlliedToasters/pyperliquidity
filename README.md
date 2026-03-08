@@ -6,7 +6,7 @@
 
 A Python implementation of [HIP-2 "Hyperliquidity"](https://hyperliquid.gitbook.io/hyperliquid-docs/hyperliquid-improvement-proposals-hips/hip-2-hyperliquidity) market-making algorithm. While HIP-2's logic runs fully on-chain, certain spot markets (especially bridged assets) are unable to use this feature. pyperliquidity recovers HIP-2 behavior using an off-chain market maker.
 
-**Core concept**: Uniswap V2 / infinite-range liquidity pools, but on an order book. Pricing emerges from inventory position on a geometric price grid — no oracle needed.
+**Core concept**: Uniswap V3 concentrated liquidity, but on an order book. You specify a finite price range via a geometric grid, and pricing emerges from inventory position — no oracle needed.
 
 ## Installation
 
