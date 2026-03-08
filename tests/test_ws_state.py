@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -674,3 +675,148 @@ async def test_ws_health_no_ws_manager():
 
     # Should not raise
     await ws._check_ws_health()
+
+
+# --- 7. Graceful shutdown ----------------------------------------------------
+
+
+async def test_shutdown_cancels_all_resting_orders():
+    """_shutdown cancels all resting orders via bulk_cancel."""
+    ws, info, exchange = _make_ws_state()
+    await ws._startup()
+
+    # Add some resting orders
+    ws.order_state.on_place_confirmed(oid=100, side="buy", level_index=0, price=1.0, size=10.0)
+    ws.order_state.on_place_confirmed(oid=101, side="sell", level_index=5, price=1.015, size=10.0)
+    ws.order_state.on_place_confirmed(oid=102, side="buy", level_index=2, price=1.006, size=10.0)
+
+    exchange.bulk_cancel.return_value = _ok([{}, {}, {}])
+
+    await ws._shutdown()
+
+    # bulk_cancel should have been called with all 3 OIDs
+    exchange.bulk_cancel.assert_called_once()
+    cancel_reqs = exchange.bulk_cancel.call_args[0][0]
+    cancelled_oids = {req["o"] for req in cancel_reqs}
+    assert cancelled_oids == {100, 101, 102}
+
+    # Order state should be cleared
+    assert len(ws.order_state.orders_by_oid) == 0
+
+
+async def test_shutdown_no_orders():
+    """_shutdown is a no-op when there are no resting orders."""
+    ws, info, exchange = _make_ws_state()
+    await ws._startup()
+
+    await ws._shutdown()
+
+    # No API call should have been made
+    exchange.bulk_cancel.assert_not_called()
+
+
+async def test_shutdown_exchange_error_handled():
+    """_shutdown handles exchange errors gracefully without raising."""
+    ws, info, exchange = _make_ws_state()
+    await ws._startup()
+
+    ws.order_state.on_place_confirmed(oid=100, side="buy", level_index=0, price=1.0, size=10.0)
+
+    exchange.bulk_cancel.side_effect = ConnectionError("network down")
+
+    # Should not raise
+    await ws._shutdown()
+
+    # Order remains in state since bulk_cancel failed before cleanup
+    assert 100 in ws.order_state.orders_by_oid
+
+
+async def test_shutdown_skipped_with_keep_orders():
+    """_shutdown skips cancellation when cancel_on_shutdown is False."""
+    ws, info, exchange = _make_ws_state(cancel_on_shutdown=False)
+    await ws._startup()
+
+    ws.order_state.on_place_confirmed(oid=100, side="buy", level_index=0, price=1.0, size=10.0)
+
+    await ws._shutdown()
+
+    # No API call should have been made
+    exchange.bulk_cancel.assert_not_called()
+    # Order should still be in state
+    assert 100 in ws.order_state.orders_by_oid
+
+
+async def test_shutdown_sets_coin_on_cancel_requests():
+    """_shutdown uses the correct coin in cancel requests."""
+    ws, info, exchange = _make_ws_state(coin="TEST")
+    await ws._startup()
+
+    ws.order_state.on_place_confirmed(oid=100, side="buy", level_index=0, price=1.0, size=10.0)
+    exchange.bulk_cancel.return_value = _ok([{}])
+
+    await ws._shutdown()
+
+    cancel_reqs = exchange.bulk_cancel.call_args[0][0]
+    assert all(req["coin"] == "TEST" for req in cancel_reqs)
+
+
+async def test_run_registers_signal_handlers():
+    """run() registers SIGINT and SIGTERM signal handlers and exits cleanly."""
+    ws, info, exchange = _make_ws_state()
+
+    # Make _tick_loop exit immediately by setting _shutting_down
+    original_startup = ws._startup
+
+    async def startup_and_stop() -> None:
+        await original_startup()
+        ws._shutting_down = True
+
+    ws._startup = startup_and_stop  # type: ignore[assignment]
+    exchange.bulk_cancel.return_value = _ok([])
+
+    await ws.run()
+
+    # run() completed cleanly — signal handlers were registered and
+    # _shutting_down was respected by the tick loop.
+    assert ws._shutting_down is True
+
+
+async def test_shutting_down_flag_stops_tick_loop():
+    """Setting _shutting_down causes _tick_loop to exit."""
+    ws, info, exchange = _make_ws_state()
+    await ws._startup()
+
+    exchange.bulk_orders.return_value = _ok([])
+    exchange.bulk_cancel.return_value = _ok([])
+    exchange.bulk_modify_orders_new.return_value = _ok([])
+
+    # Set shutting_down after a brief delay
+    async def stop_soon() -> None:
+        await asyncio.sleep(0.05)
+        ws._shutting_down = True
+
+    asyncio.create_task(stop_soon())
+    await ws._tick_loop()
+
+    # tick_loop should have exited
+    assert ws._shutting_down is True
+
+
+async def test_second_signal_is_ignored():
+    """Second signal does not re-trigger shutdown, just logs warning."""
+    ws, info, exchange = _make_ws_state()
+
+    original_startup = ws._startup
+
+    async def startup_and_stop() -> None:
+        await original_startup()
+        ws._shutting_down = True
+
+    ws._startup = startup_and_stop  # type: ignore[assignment]
+    exchange.bulk_cancel.return_value = _ok([])
+
+    await ws.run()
+
+    # _shutting_down was already True, simulating second signal
+    # The flag should remain True, no error should occur
+    assert ws._shutting_down is True

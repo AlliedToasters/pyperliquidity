@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import signal
 from typing import Any, Literal
 
 from pyperliquidity.batch_emitter import BatchEmitter
@@ -61,6 +62,9 @@ class WsState:
     active_levels : int | None
         Maximum number of levels to place per side of the cursor.
         When ``None``, all available levels get orders.
+    cancel_on_shutdown : bool
+        When ``True`` (default), cancel all resting orders on SIGINT/SIGTERM
+        before exiting.  Set to ``False`` to leave orders resting.
     """
 
     def __init__(
@@ -81,6 +85,7 @@ class WsState:
         allocated_token: float = float("inf"),
         allocated_usdc: float = float("inf"),
         active_levels: int | None = None,
+        cancel_on_shutdown: bool = True,
     ) -> None:
         self.coin = coin
         self.start_px = start_px
@@ -95,6 +100,7 @@ class WsState:
         self._allocated_token = allocated_token
         self._allocated_usdc = allocated_usdc
         self.active_levels = active_levels
+        self.cancel_on_shutdown = cancel_on_shutdown
 
         self._info = info
         self._exchange = exchange
@@ -112,6 +118,7 @@ class WsState:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tick_count: int = 0
         self._ws_alive: bool = True
+        self._shutting_down: bool = False
 
     # -- Startup ---------------------------------------------------------------
 
@@ -396,8 +403,8 @@ class WsState:
         )
 
     async def _tick_loop(self) -> None:
-        """Run the tick loop forever at interval_s."""
-        while True:
+        """Run the tick loop until shutdown is requested."""
+        while not self._shutting_down:
             self._tick_count += 1
 
             # Check WS health every tick (~3s)
@@ -487,10 +494,63 @@ class WsState:
         await self._reconcile()
         logger.info("WS reconnected: resubscribed and reconciled")
 
+    # -- Graceful shutdown -------------------------------------------------------
+
+    async def _shutdown(self) -> None:
+        """Cancel all resting orders and log results.
+
+        Called on SIGINT/SIGTERM when ``cancel_on_shutdown`` is ``True``.
+        Errors are logged but never propagated — shutdown must not fail.
+        """
+        if not self.cancel_on_shutdown:
+            logger.info("Shutdown: --keep-orders set, skipping order cancellation")
+            return
+
+        resting = self.order_state.get_current_orders()
+        if not resting:
+            logger.info("Shutdown: no resting orders to cancel")
+            return
+
+        oids = [o.oid for o in resting]
+        logger.info("Shutdown: cancelling %d resting order(s): %s", len(oids), oids)
+
+        cancel_reqs = [{"coin": self.coin, "o": oid} for oid in oids]
+        try:
+            response = await asyncio.to_thread(self._exchange.bulk_cancel, cancel_reqs)
+            logger.info("Shutdown: bulk_cancel response: %s", response)
+        except Exception:
+            logger.exception("Shutdown: bulk_cancel failed, orders may remain on exchange")
+            return
+
+        # Clean up order state regardless of individual cancel statuses
+        for oid in oids:
+            self.order_state.remove_ghost(oid)
+
+        logger.info("Shutdown: cancelled %d order(s), order state cleared", len(oids))
+
     # -- Main entry point ------------------------------------------------------
 
     async def run(self) -> None:
-        """Start the market maker: startup → subscribe → tick loop."""
+        """Start the market maker: startup → subscribe → tick loop.
+
+        Registers signal handlers for SIGINT and SIGTERM so that the tick
+        loop stops cleanly and resting orders are cancelled before exit.
+        """
         await self._startup()
         self._subscribe()
+
+        loop = asyncio.get_running_loop()
+
+        def _signal_handler() -> None:
+            if self._shutting_down:
+                # Second signal — user is impatient, let asyncio handle it
+                logger.warning("Shutdown already in progress, please wait...")
+                return
+            self._shutting_down = True
+            logger.info("Signal received, initiating graceful shutdown...")
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+
         await self._tick_loop()
+        await self._shutdown()
