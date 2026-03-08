@@ -504,6 +504,79 @@ async def test_truncated_cancel_response_propagates_error():
 
 # --- 5.14 Budget debited on SDK exception ------------------------------------
 
+async def test_cancel_uses_oid_key():
+    """Bug #32: cancel requests must use 'oid' key, not 'o'."""
+    emitter, ex, os, _ = _make_emitter()
+    os.on_place_confirmed(oid=42, side="buy", level_index=0, price=1.0, size=10.0)
+    ex.bulk_cancel.return_value = _ok([{}])
+
+    diff = OrderDiff(cancels=[42])
+    budget = _budget()
+    await emitter.emit(diff, budget)
+
+    cancel_reqs = ex.bulk_cancel.call_args[0][0]
+    assert cancel_reqs == [{"coin": "TEST", "oid": 42}]
+    assert "o" not in cancel_reqs[0]
+
+
+async def test_size_rounded_to_sz_decimals_on_place():
+    """Bug #33: sizes must be rounded to szDecimals before sending."""
+    emitter, ex, os, clock = _make_emitter()
+    emitter._sz_decimals = 2
+
+    ex.bulk_orders.return_value = _ok([{"resting": {"oid": 1}}])
+
+    diff = OrderDiff(places=[_desired(side="buy", level=0, px=1.0, sz=10.12345)])
+    budget = _budget()
+    await emitter.emit(diff, budget)
+
+    placed_reqs = ex.bulk_orders.call_args[0][0]
+    assert placed_reqs[0]["sz"] == 10.12
+
+
+async def test_size_rounded_to_sz_decimals_on_modify():
+    """Bug #33: sizes must be rounded to szDecimals before sending."""
+    emitter, ex, os, _ = _make_emitter()
+    emitter._sz_decimals = 3
+    os.on_place_confirmed(oid=100, side="buy", level_index=5, price=1.50, size=10.0)
+
+    ex.bulk_modify_orders_new.return_value = _ok([{"resting": {"oid": 100}}])
+
+    diff = OrderDiff(modifies=[(100, _desired(side="buy", level=5, px=1.55, sz=5.12349))])
+    budget = _budget()
+    await emitter.emit(diff, budget)
+
+    modify_reqs = ex.bulk_modify_orders_new.call_args[0][0]
+    assert modify_reqs[0]["order"]["sz"] == 5.123
+
+
+async def test_zero_size_after_rounding_skipped_on_place():
+    """Bug #33: orders that round to zero should be skipped."""
+    emitter, ex, os, _ = _make_emitter()
+    emitter._sz_decimals = 0
+
+    diff = OrderDiff(places=[_desired(side="buy", level=0, px=1.0, sz=0.4)])
+    budget = _budget()
+    result = await emitter.emit(diff, budget)
+
+    assert result.n_placed == 0
+    ex.bulk_orders.assert_not_called()
+
+
+async def test_zero_size_after_rounding_skipped_on_modify():
+    """Bug #33: modifies that round to zero should be skipped."""
+    emitter, ex, os, _ = _make_emitter()
+    emitter._sz_decimals = 0
+    os.on_place_confirmed(oid=100, side="buy", level_index=0, price=1.0, size=10.0)
+
+    diff = OrderDiff(modifies=[(100, _desired(side="buy", level=0, px=1.0, sz=0.4))])
+    budget = _budget()
+    result = await emitter.emit(diff, budget)
+
+    assert result.n_modified == 0
+    ex.bulk_modify_orders_new.assert_not_called()
+
+
 async def test_budget_debited_on_sdk_exception():
     emitter, ex, os, _ = _make_emitter()
 

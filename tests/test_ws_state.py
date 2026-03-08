@@ -242,7 +242,7 @@ async def test_reconciliation_cancels_orphaned_order():
     # bulk_cancel should have been called with oid 999
     exchange.bulk_cancel.assert_called_once()
     cancel_reqs = exchange.bulk_cancel.call_args[0][0]
-    assert any(req["o"] == 999 for req in cancel_reqs)
+    assert any(req["oid"] == 999 for req in cancel_reqs)
 
 
 async def test_reconciliation_removes_ghost_order():
@@ -697,7 +697,7 @@ async def test_shutdown_cancels_all_resting_orders():
     # bulk_cancel should have been called with all 3 OIDs
     exchange.bulk_cancel.assert_called_once()
     cancel_reqs = exchange.bulk_cancel.call_args[0][0]
-    cancelled_oids = {req["o"] for req in cancel_reqs}
+    cancelled_oids = {req["oid"] for req in cancel_reqs}
     assert cancelled_oids == {100, 101, 102}
 
     # Order state should be cleared

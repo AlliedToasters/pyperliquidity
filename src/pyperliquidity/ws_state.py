@@ -141,7 +141,9 @@ class WsState:
         self.asset_id = spot_entry["index"] + 10_000
         # Resolve base token name (e.g. "@1434" → "THC") for balance lookups
         base_token_idx = spot_entry["tokens"][0]
-        self._balance_coin = spot_meta["tokens"][base_token_idx]["name"]
+        base_token = spot_meta["tokens"][base_token_idx]
+        self._balance_coin = base_token["name"]
+        self._sz_decimals: int = int(base_token.get("szDecimals", 5))
 
         # 2. Construct fixed PricingGrid
         self.grid = PricingGrid(start_px=self.start_px, n_orders=self.n_orders)
@@ -197,6 +199,7 @@ class WsState:
             asset_id=self.asset_id,
             exchange=self._exchange,
             order_state=self.order_state,
+            sz_decimals=self._sz_decimals,
         )
 
         logger.info(
@@ -516,7 +519,7 @@ class WsState:
         oids = [o.oid for o in resting]
         logger.info("Shutdown: cancelling %d resting order(s): %s", len(oids), oids)
 
-        cancel_reqs = [{"coin": self.coin, "o": oid} for oid in oids]
+        cancel_reqs = [{"coin": self.coin, "oid": oid} for oid in oids]
         try:
             response = await asyncio.to_thread(self._exchange.bulk_cancel, cancel_reqs)
             logger.info("Shutdown: bulk_cancel response: %s", response)
