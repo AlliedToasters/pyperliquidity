@@ -185,24 +185,74 @@ def _build_ws_state(
     )
 
 
-def main() -> None:
-    """CLI entrypoint: pyperliquidity run --config config.toml."""
-    parser = argparse.ArgumentParser(prog="pyperliquidity")
-    sub = parser.add_subparsers(dest="command")
-    run_parser = sub.add_parser("run", help="Start the market maker")
-    run_parser.add_argument("--config", required=True, help="Path to config.toml")
-    run_parser.add_argument(
-        "--keep-orders",
-        action="store_true",
-        default=False,
-        help="Skip cancellation of resting orders on shutdown",
-    )
-    args = parser.parse_args()
+def _config_to_toml(config: dict[str, Any]) -> str:
+    """Serialize a config dict to TOML format.
 
-    if args.command != "run":
-        parser.print_help()
-        sys.exit(1)
+    Uses a simple f-string formatter — no external dependency needed since
+    the config structure is flat and known.
+    """
+    lines: list[str] = []
 
+    # [market]
+    m = config["market"]
+    lines.append("[market]")
+    lines.append(f'coin = "{m["coin"]}"')
+    lines.append(f"testnet = {'true' if m.get('testnet') else 'false'}")
+    lines.append("")
+
+    # [strategy]
+    s = config["strategy"]
+    lines.append("[strategy]")
+    lines.append(f"n_orders = {s['n_orders']}  # total grid levels")
+    lines.append(f"order_sz = {s['order_sz']}  # tokens per tranche")
+    lines.append(f"start_px = {s['start_px']}  # grid bottom price")
+    lines.append(f"target_px = {s['target_px']}  # initial cursor price")
+    if "active_levels" in s:
+        lines.append(f"active_levels = {s['active_levels']}  # max levels per side")
+    lines.append("")
+
+    # [allocation]
+    a = config["allocation"]
+    lines.append("[allocation]")
+    lines.append(f"allocated_token = {a['allocated_token']}")
+    lines.append(f"allocated_usdc = {a['allocated_usdc']}")
+    lines.append("")
+
+    # [tuning]
+    t = config.get("tuning", {})
+    if t:
+        lines.append("[tuning]")
+        for key, val in t.items():
+            lines.append(f"{key} = {val}")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def _print_grid_summary(config: dict[str, Any], warnings: list[Any]) -> None:
+    """Print a human-readable grid summary to stderr."""
+    s = config["strategy"]
+    a = config["allocation"]
+    m = config["market"]
+
+    print(f"Grid config for {m['coin']}:", file=sys.stderr)
+    print(f"  Price range: {s['start_px']} → (level {s['n_orders'] - 1})", file=sys.stderr)
+    print(f"  Grid levels: {s['n_orders']}", file=sys.stderr)
+    print(f"  Order size:  {s['order_sz']} tokens/tranche", file=sys.stderr)
+    print(f"  Target px:   {s['target_px']}", file=sys.stderr)
+    if "active_levels" in s:
+        print(f"  Active lvls: {s['active_levels']} per side", file=sys.stderr)
+    print(f"  Token alloc: {a['allocated_token']}", file=sys.stderr)
+    print(f"  USDC alloc:  {a['allocated_usdc']:.2f}", file=sys.stderr)
+    if m.get("testnet"):
+        print("  Network:     TESTNET", file=sys.stderr)
+
+    for w in warnings:
+        print(f"  WARNING [{w.code}]: {w.message}", file=sys.stderr)
+
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    """Handle the 'run' subcommand."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
     config = _load_config(args.config)
@@ -216,3 +266,86 @@ def main() -> None:
     cancel_on_shutdown = not args.keep_orders
     ws_state = _build_ws_state(config, private_key, wallet, cancel_on_shutdown=cancel_on_shutdown)
     asyncio.run(ws_state.run())
+
+
+def _cmd_grid(args: argparse.Namespace) -> None:
+    """Handle the 'grid' subcommand — generate a config from market parameters."""
+    from pyperliquidity.grid_generator import generate_grid_config
+
+    min_px, max_px = args.price_range
+
+    try:
+        config, warnings = generate_grid_config(
+            coin=args.coin,
+            min_px=min_px,
+            max_px=max_px,
+            liquidity_token=args.liquidity_token,
+            target_px=args.target_px,
+            tick_size=args.tick_size,
+            active_levels=args.active_levels,
+            testnet=args.testnet,
+            sz_decimals=args.sz_decimals,
+            min_notional=args.min_notional,
+        )
+    except ValueError as exc:
+        sys.exit(f"Error: {exc}")
+
+    _print_grid_summary(config, warnings)
+
+    toml_str = _config_to_toml(config)
+    if args.output:
+        Path(args.output).write_text(toml_str)
+        print(f"Config written to {args.output}", file=sys.stderr)
+    else:
+        print(toml_str)
+
+
+def main() -> None:
+    """CLI entrypoint: pyperliquidity {run,grid}."""
+    parser = argparse.ArgumentParser(prog="pyperliquidity")
+    sub = parser.add_subparsers(dest="command")
+
+    # --- run subcommand ---
+    run_parser = sub.add_parser("run", help="Start the market maker")
+    run_parser.add_argument("--config", required=True, help="Path to config.toml")
+    run_parser.add_argument(
+        "--keep-orders",
+        action="store_true",
+        default=False,
+        help="Skip cancellation of resting orders on shutdown",
+    )
+
+    # --- grid subcommand ---
+    grid_parser = sub.add_parser("grid", help="Generate a config from market parameters")
+    grid_parser.add_argument("--coin", required=True, help="Market identifier (e.g. @1434)")
+    grid_parser.add_argument(
+        "--price-range", nargs=2, type=float, required=True, metavar=("MIN", "MAX"),
+        help="Price range for the grid (min max)",
+    )
+    grid_parser.add_argument(
+        "--liquidity-token", type=float, required=True,
+        help="Total token amount to allocate as ask liquidity",
+    )
+    grid_parser.add_argument("--target-px", type=float, default=None, help="Initial market price")
+    grid_parser.add_argument(
+        "--tick-size", type=float, default=0.003, help="Tick spacing (default 0.003)",
+    )
+    grid_parser.add_argument("--active-levels", type=int, default=None, help="Max levels per side")
+    grid_parser.add_argument("--testnet", action="store_true", default=False, help="Target testnet")
+    grid_parser.add_argument("--output", "-o", type=str, default=None, help="Write TOML to file")
+    grid_parser.add_argument(
+        "--sz-decimals", type=int, default=None, help="Round order_sz to N decimals",
+    )
+    grid_parser.add_argument(
+        "--min-notional", type=float, default=10.0, help="Min notional (default 10)",
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "run":
+        _cmd_run(args)
+    elif args.command == "grid":
+        _cmd_grid(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
