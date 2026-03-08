@@ -19,6 +19,7 @@ from pyperliquidity.order_state import OrderState
 from pyperliquidity.pricing_grid import PricingGrid
 from pyperliquidity.quoting_engine import compute_desired_orders
 from pyperliquidity.rate_limit import RateLimitBudget
+from pyperliquidity.spot_meta_fix import fix_spot_meta
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,8 @@ class WsState:
         self._loop = asyncio.get_running_loop()
 
         # 1. Resolve coin → asset_id and base token name for balance lookups
-        spot_meta = await asyncio.to_thread(self._info.spot_meta)
+        raw_spot_meta = await asyncio.to_thread(self._info.spot_meta)
+        spot_meta = fix_spot_meta(raw_spot_meta)
         universe = spot_meta["universe"]
         spot_entry: dict[str, Any] | None = None
         for token in universe:

@@ -93,12 +93,16 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
         TESTNET_API_URL,
     )
 
+    from pyperliquidity.spot_meta_fix import fetch_fixed_spot_meta
     from pyperliquidity.ws_state import WsState
 
     testnet = config.get("market", {}).get("testnet", False)
     base_url = TESTNET_API_URL if testnet else MAINNET_API_URL
 
-    info = Info(base_url=base_url, skip_ws=False)
+    # Fetch and fix spot_meta before constructing Info to avoid IndexError
+    # when token index values diverge from array positions.
+    fixed_spot_meta = fetch_fixed_spot_meta(base_url)
+    info = Info(base_url=base_url, skip_ws=False, spot_meta=fixed_spot_meta)
     account = Account.from_key(private_key)
     exchange = Exchange(account, base_url=base_url)
 
