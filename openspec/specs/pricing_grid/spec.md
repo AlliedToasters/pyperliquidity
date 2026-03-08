@@ -9,7 +9,7 @@ Generate and manage the geometric price ladder that defines all valid order pric
 - `start_px: float` — The initial price of the range (px_0)
 - `n_orders: int` — Number of price levels in the grid
 - `tick_size: float = 0.003` — Multiplicative spacing between levels (0.3% default per HIP-2)
-- `round_fn: Callable[[float], float]` — Optional rounding callable applied at each recurrence step. Defaults to Python's `round()` with 8 significant figures.
+- `round_fn: Callable[[float], float]` — Optional rounding callable applied at each recurrence step. Defaults to 5 significant figure rounding, matching observed HIP-2 ladder prices.
 
 ## Core Function
 
@@ -30,8 +30,24 @@ The system SHALL generate a geometric price ladder of exactly `n_orders` levels 
 
 ### Configurable Rounding
 
+The default `round_fn` rounds to 5 significant figures, matching observed HIP-2 ladder prices on Hyperliquid mainnet and testnet. This is verified against live orderbooks (@67 BLOKED2, @37 QUIZ, @929 SLTEST) where all visible prices match `round(px * 1.003, 5sf)` exactly.
+
+The `round_fn` parameter remains configurable — callers MAY pass a custom rounding function. When omitted, the default 5sf rounding applies.
+
+- **Default rounding**: omitting `round_fn` uses 5 significant figure rounding
 - **Custom rounding**: `round_fn=lambda px: round(px, 4)` → all levels rounded to 4 decimal places
-- **Default rounding**: omitting `round_fn` uses significant-figure rounding
+
+#### Scenario: Default rounding produces 5 significant figures
+- **WHEN** a `PricingGrid` is constructed with `start_px=0.020777` and default `round_fn`
+- **THEN** level 1 is `0.020839` (5sf of `0.020777 * 1.003 = 0.02083933...`)
+
+#### Scenario: Grid matches verified HIP-2 market (@67 BLOKED2)
+- **WHEN** `PricingGrid(start_px=0.020777, n_orders=40, tick_size=0.003)` is constructed with default rounding
+- **THEN** level 20 price is `0.022060` and all 40 levels match the observed HIP-2 orderbook exactly
+
+#### Scenario: Custom rounding overrides default
+- **WHEN** `round_fn=lambda px: round(px, 4)` is passed
+- **THEN** all levels are rounded to 4 decimal places instead of 5 significant figures
 
 ### Degenerate Grid Detection
 

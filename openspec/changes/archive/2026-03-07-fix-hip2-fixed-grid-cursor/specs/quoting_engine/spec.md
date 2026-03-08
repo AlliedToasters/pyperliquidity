@@ -1,10 +1,8 @@
-# Quoting Engine
+## MODIFIED Requirements
 
-## Purpose
+### Requirement: Quoting engine interface accepts PricingGrid and effective balances
 
-Pure function that computes the desired set of orders given current inventory and the price grid. Zero I/O, zero side effects. This is the HIP-2 algorithm logic.
-
-## Interface
+The quoting engine SHALL expose a single pure function:
 
 ```python
 compute_desired_orders(
@@ -18,28 +16,21 @@ compute_desired_orders(
 
 The function accepts a `PricingGrid` (constructed once, fixed for the strategy's lifetime), effective balances from inventory, the order size, and an optional minimum notional threshold.
 
-The function SHALL NOT accept a `boundary_level` parameter. The boundary (cursor) is derived internally from `effective_token` and `order_sz` (see cursor computation below).
+The function SHALL NOT accept a `boundary_level` parameter. The boundary (cursor) is derived internally from `effective_token` and `order_sz` (see cursor computation requirement).
 
 The function SHALL return a plain `list[DesiredOrder]`. There is no `QuoteResult` wrapper — `mid_price`, `effective_order_sz`, and `effective_n_orders` are artifacts of the removed floating-mid approach and are not computed.
 
-### DesiredOrder
+#### Scenario: Function signature
+- **WHEN** `compute_desired_orders` is called with `(grid, effective_token, effective_usdc, order_sz)`
+- **THEN** it returns a `list[DesiredOrder]` without requiring a boundary_level parameter
 
-A frozen dataclass:
-```
-DesiredOrder:
-    side: "buy" | "sell"
-    level_index: int    # absolute grid position
-    price: float
-    size: float
-```
+#### Scenario: Deterministic output
+- **WHEN** `compute_desired_orders` is called twice with identical arguments
+- **THEN** both calls return identical lists of DesiredOrder
 
-`DesiredOrder` is immutable and hashable. Two instances with identical fields are equal and share the same hash. `level_index` is an absolute position on the `PricingGrid` (0 = `start_px`, `n_orders - 1` = highest price). Both bids and asks share the same index space.
+### Requirement: Cursor is derived from token balance each tick
 
-## Algorithm
-
-### Step 1: Cursor Derivation
-
-The cursor (boundary between bids and asks) is derived from effective token balance each tick:
+The quoting engine SHALL compute the cursor (boundary between bids and asks) from effective token balance:
 
 ```
 n_full_asks = floor(effective_token / order_sz)
@@ -66,7 +57,9 @@ The cursor is the grid level index of the lowest ask. All levels below the curso
 - **WHEN** `effective_token` is large enough for more ask levels than `grid.n_orders`
 - **THEN** `total_ask_levels` is capped at `grid.n_orders`, `cursor = 0` (all levels are asks)
 
-### Step 2: Ask Placement (ascending from cursor)
+### Requirement: Ask placement ascending from cursor
+
+The quoting engine SHALL place asks on the grid starting at the cursor level and ascending:
 
 1. If `partial_ask_sz > 0`, place one partial ask at level `cursor` with size `partial_ask_sz`
 2. Place `n_full_asks` full asks (size `order_sz`) at levels ascending from `cursor + (1 if partial else 0)`
@@ -86,7 +79,9 @@ Asks are placed at the LOWEST available price levels (tightest spread), matching
 - **WHEN** cursor is at level 98 on a 100-level grid and there are 5 full asks needed
 - **THEN** only 2 asks are placed (levels 98, 99) — remaining 3 are truncated
 
-### Step 3: Bid Placement (descending from cursor)
+### Requirement: Bid placement descending from cursor
+
+The quoting engine SHALL place bids descending from `cursor - 1` through level 0, funded by USDC:
 
 1. Walk levels descending from `cursor - 1`
 2. At each level, compute cost = `grid.price_at_level(level) * order_sz`
@@ -108,17 +103,19 @@ Bids are placed at the HIGHEST remaining price levels (tightest spread), matchin
 - **WHEN** `cursor = 0` (all levels are asks)
 - **THEN** no bids are placed regardless of USDC balance
 
-### Step 4: Spread Guarantee
+### Requirement: No ask and bid share the same grid level
 
-No ask and bid share the same grid level. The cursor cleanly separates asks (at cursor and above) from bids (below cursor). This ensures a minimum spread of one grid level spacing (~30 bps for tick_size=0.003).
+The quoting engine SHALL guarantee that no grid level has both a bid and an ask order. The cursor cleanly separates asks (at cursor and above) from bids (below cursor). This ensures a minimum spread of one grid level spacing (~30 bps for tick_size=0.003).
 
 #### Scenario: Minimum spread maintained
 - **WHEN** the cursor is at level 5
 - **THEN** the tightest ask is at level 5 and the tightest bid is at level 4 — spread equals one tick
 
-### Step 5: Minimum Notional Filtering
+### Requirement: Minimum notional filtering
 
-Remove any order where `price * size < min_notional` from the result (both asks and bids, including partials). When `min_notional` is 0.0 (default), no filtering occurs.
+The quoting engine SHALL exclude any order where `price * size < min_notional` from the returned list. This applies to both asks and bids, including partial orders.
+
+When `min_notional` is 0.0 (default), no filtering occurs.
 
 #### Scenario: Partial order filtered by min_notional
 - **WHEN** a partial ask has `price = 1.006` and `size = 5.0`, and `min_notional = 10.0`
@@ -132,37 +129,55 @@ Remove any order where `price * size < min_notional` from the result (both asks 
 - **WHEN** `min_notional = 0.0`
 - **THEN** all orders (including partials) are included in the result
 
-### Step 6: Return
+### Requirement: DesiredOrder uses absolute grid level indices
 
-All desired orders (asks + bids), each tagged with their grid level_index.
+Each `DesiredOrder` SHALL have a `level_index` that is an absolute position on the `PricingGrid` (0 = `start_px`, `n_orders - 1` = highest price). Both bids and asks share the same index space.
 
-## Invariants
+`DesiredOrder` is a frozen, hashable dataclass:
+```
+DesiredOrder:
+    side: "buy" | "sell"
+    level_index: int    # absolute grid position
+    price: float
+    size: float
+```
 
-1. Output is deterministic: same inputs always produce the same orders in the same order
-2. No ask and bid share the same grid level (guaranteed 0.3% spread minimum)
-3. Total ask size == effective_token (all tokens are quoted, before min_notional filtering)
-4. Total bid cost (sum of px * sz for bids) ≤ effective_usdc
-5. Orders are contiguous on the grid — no gaps between the lowest ask and highest bid
-6. No side effects, no I/O, no dependency on external mutable state
+#### Scenario: Ask level index
+- **WHEN** the cursor is at level 5 on a 10-level grid
+- **THEN** asks have `level_index` values 5, 6, 7, 8, 9
 
-## Boundary Tracking
+#### Scenario: Bid level index
+- **WHEN** the cursor is at level 5
+- **THEN** bids have `level_index` values 4, 3, 2, 1, 0 (descending from cursor)
 
-The cursor is derived from inventory each tick — NOT stored as state, NOT passed as a parameter. The "price" of the market maker is an emergent property of its inventory position on the grid, just like a constant-product AMM.
+### Requirement: Edge cases
 
-For logging, the cursor MAY be derived externally: `cursor = grid.n_orders - min(floor(eff_token / order_sz) + (1 if eff_token % order_sz > 0 else 0), grid.n_orders)`.
+- **Both balances zero**: Return an empty list.
+- **All tokens sold** (`effective_token = 0`): Cursor at `n_orders`. Only bids, no asks.
+- **All USDC spent** (`effective_usdc = 0`): Only asks, no bids.
+- **order_sz larger than total token balance**: Single partial ask at the top of the grid.
+- **Grid overflow**: Asks exceeding the grid's maximum level index are truncated.
+- **Total ask size**: Equals `effective_token` (all tokens are quoted, before min_notional filtering).
+- **Total bid cost**: Sum of `px * sz` for all bids ≤ `effective_usdc`.
 
-## Edge Cases
+#### Scenario: Both balances zero
+- **WHEN** `effective_token = 0` and `effective_usdc = 0`
+- **THEN** an empty list is returned
 
-- Both balances zero: Return an empty list.
-- All tokens sold (effective_token = 0): Cursor at `n_orders`. Only bids, no asks.
-- All USDC spent (effective_usdc = 0): Only asks, no bids.
-- order_sz larger than total token balance: Single partial ask at the top of the grid.
-- Grid overflow: Asks exceeding the grid's maximum level index are truncated.
-- Total ask size: Equals `effective_token` (all tokens are quoted, before min_notional filtering).
-- Total bid cost: Sum of `px * sz` for all bids ≤ `effective_usdc`.
+#### Scenario: All tokens sold
+- **WHEN** `effective_token = 0` and `effective_usdc = 5000`
+- **THEN** cursor is at `n_orders`, only bid orders are returned
 
-## Dependencies
+#### Scenario: Single partial ask
+- **WHEN** `effective_token = 50` and `order_sz = 1000`
+- **THEN** one partial ask of size 50 is placed at `n_orders - 1`
 
-- `pricing_grid.PricingGrid`: Grid levels and prices
-- Standard library and typing only
-- NO dependency on `order_state`, `ws_state`, `batch_emitter`, `rate_limit`, or any I/O module
+## REMOVED Requirements
+
+### Requirement: QuoteResult return type
+**Reason**: The `QuoteResult` wrapper (containing `mid_price`, `effective_order_sz`, `effective_n_orders`) is an artifact of the floating-mid approach. With a fixed grid and cursor derivation, there is no floating mid to report, and the effective_order_sz/n_orders adjustments are replaced by min_notional filtering.
+**Migration**: Callers receive `list[DesiredOrder]` directly. For logging a reference price, use `grid.price_at_level(cursor)` where cursor is derived from `floor(effective_token / order_sz)`.
+
+### Requirement: Floating mid price derivation
+**Reason**: The floating-mid approach (`mid = usdc / tokens`) with per-tick grid regeneration does not match HIP-2 behavior. HIP-2 uses a fixed grid with a boundary cursor.
+**Migration**: Replace with fixed `PricingGrid` constructed once from `start_px`. Price emerges from inventory position on the grid, not from a ratio.

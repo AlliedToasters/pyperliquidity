@@ -79,6 +79,7 @@ def _make_ws_state(
     e = exchange or _make_exchange()
     defaults = {
         "coin": "TEST",
+        "start_px": 1.0,
         "n_orders": 10,
         "order_sz": 10.0,
         "info": i,
@@ -116,6 +117,16 @@ async def test_startup_coin_not_found():
         await ws._startup()
 
 
+async def test_startup_constructs_grid():
+    """Startup constructs PricingGrid from start_px and n_orders."""
+    ws, _, _ = _make_ws_state(start_px=0.020777, n_orders=40)
+    await ws._startup()
+
+    assert ws.grid is not None
+    assert ws.grid.n_orders == 40
+    assert ws.grid.levels[0] == 0.020777
+
+
 async def test_startup_seeds_order_state():
     """open_orders seeds OrderState with resting orders."""
     open_orders = [
@@ -132,6 +143,20 @@ async def test_startup_seeds_order_state():
     assert 200 not in ws.order_state.orders_by_oid
     assert ws.order_state.orders_by_oid[100].side == "buy"
     assert ws.order_state.orders_by_oid[101].side == "sell"
+
+
+async def test_startup_seeds_order_with_grid_level():
+    """open_orders level_index is resolved via grid.level_for_price."""
+    open_orders = [
+        {"coin": "TEST", "oid": 100, "side": "B", "limitPx": "1.0", "sz": "10.0"},
+        {"coin": "TEST", "oid": 101, "side": "A", "limitPx": "1.003", "sz": "10.0"},
+    ]
+    ws, _, _ = _make_ws_state(info=_make_info(open_orders=open_orders))
+    await ws._startup()
+
+    # level_for_price(1.0) → 0, level_for_price(1.003) → 1
+    assert ws.order_state.orders_by_oid[100].level_index == 0
+    assert ws.order_state.orders_by_oid[101].level_index == 1
 
 
 async def test_startup_seeds_inventory():
@@ -151,14 +176,6 @@ async def test_startup_seeds_rate_limit():
 
     assert ws.rate_limit.cum_vlm == 5000.0
     assert ws.rate_limit.n_requests == 300
-
-
-async def test_startup_computes_mid():
-    """Startup computes _last_mid from inventory balances."""
-    ws, _, _ = _make_ws_state(info=_make_info(token_bal=100.0, usdc_bal=500.0))
-    await ws._startup()
-
-    assert ws._last_mid == pytest.approx(5.0)
 
 
 # --- 6.2 Tick loop ------------------------------------------------------------
@@ -184,12 +201,15 @@ async def test_tick_runs_full_pipeline():
     assert ws._tick_count == 0  # _tick doesn't increment, _tick_loop does
 
 
-async def test_tick_uses_inventory_mid():
-    """Tick computes mid from effective_usdc / effective_token."""
+async def test_tick_uses_grid_not_floating_mid():
+    """Tick uses PricingGrid, no _last_mid attribute."""
     ws, info, exchange = _make_ws_state(
         info=_make_info(token_bal=100.0, usdc_bal=10_000.0),
     )
     await ws._startup()
+
+    # _last_mid should not exist
+    assert not hasattr(ws, "_last_mid")
 
     exchange.bulk_orders.return_value = _ok([
         {"resting": {"oid": i}} for i in range(300, 320)
@@ -199,8 +219,8 @@ async def test_tick_uses_inventory_mid():
 
     await ws._tick()
 
-    # mid should be usdc/token = 10000/100 = 100
-    assert ws._last_mid == pytest.approx(100.0)
+    # Grid should still be present
+    assert ws.grid is not None
 
 
 # --- 6.3 Reconciliation ------------------------------------------------------
@@ -365,6 +385,26 @@ async def test_order_update_resting_adds_to_state():
 
     assert 77 in ws.order_state.orders_by_oid
     assert ws.order_state.orders_by_oid[77].side == "buy"
+
+
+async def test_order_update_uses_grid_for_level():
+    """orderUpdates resolves level_index via grid.level_for_price."""
+    ws, _, _ = _make_ws_state()
+    await ws._startup()
+
+    msg = [{
+        "status": "resting",
+        "order": {
+            "oid": 77,
+            "side": "B",
+            "limitPx": "1.003",
+            "sz": "10.0",
+        },
+    }]
+    await ws._handle_order_update(msg)
+
+    # 1.003 is level 1 on a grid starting at 1.0
+    assert ws.order_state.orders_by_oid[77].level_index == 1
 
 
 async def test_order_update_sdk_wrapper_unwrapped():

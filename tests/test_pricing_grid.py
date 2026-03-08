@@ -5,8 +5,6 @@ import pytest
 from pyperliquidity.pricing_grid import (
     PricingGrid,
     _default_round,
-    generate_ask_levels,
-    generate_bid_levels,
 )
 
 # --- 3.1 Standard grid generation ---
@@ -179,74 +177,38 @@ class TestImmutability:
             grid._levels = (1.0, 2.0)  # type: ignore[misc]
 
 
-# --- 3.8 generate_ask_levels ---
+# --- 3.8 5sf rounding verification against HIP-2 ---
 
 
-class TestGenerateAskLevels:
-    def test_correct_length(self) -> None:
-        levels = generate_ask_levels(mid_price=100.0, n_orders=5)
-        assert len(levels) == 5
+class TestDefaultRounding5sf:
+    def test_default_round_produces_5sf(self) -> None:
+        """_default_round rounds to 5 significant figures."""
+        assert _default_round(0.020777) == 0.020777
+        # 0.020777 * 1.003 = 0.020839331 → 5sf = 0.020839
+        assert _default_round(0.020777 * 1.003) == 0.020839
 
-    def test_first_level_is_rounded_mid(self) -> None:
-        levels = generate_ask_levels(mid_price=100.0, n_orders=5)
-        assert levels[0] == _default_round(100.0)
+    def test_grid_level_1_matches_hip2(self) -> None:
+        """Level 1 of @67 BLOKED2 grid matches observed HIP-2 value."""
+        grid = PricingGrid(start_px=0.020777, n_orders=40)
+        assert grid.levels[0] == 0.020777
+        assert grid.levels[1] == 0.020839
 
-    def test_monotonically_increasing(self) -> None:
-        levels = generate_ask_levels(mid_price=100.0, n_orders=10)
-        for i in range(len(levels) - 1):
-            assert levels[i] < levels[i + 1]
+    def test_grid_level_20_matches_hip2(self) -> None:
+        """Level 20 of @67 BLOKED2 grid matches observed value 0.022060."""
+        grid = PricingGrid(start_px=0.020777, n_orders=40)
+        assert grid.levels[20] == 0.022060
 
-    def test_spacing_approximately_tick_size(self) -> None:
-        levels = generate_ask_levels(mid_price=100.0, n_orders=10)
-        for i in range(len(levels) - 1):
-            ratio = levels[i + 1] / levels[i]
-            assert abs(ratio - 1.003) < 0.001
+    def test_all_levels_are_5sf(self) -> None:
+        """Every level in the grid is rounded to 5 significant figures."""
+        grid = PricingGrid(start_px=0.020777, n_orders=40)
+        for i, px in enumerate(grid.levels):
+            assert px == _default_round(px), (
+                f"Level {i} ({px}) is not 5sf-rounded"
+            )
 
-    def test_zero_n_orders(self) -> None:
-        levels = generate_ask_levels(mid_price=100.0, n_orders=0)
-        assert levels == ()
-
-    def test_returns_tuple(self) -> None:
-        levels = generate_ask_levels(mid_price=100.0, n_orders=3)
-        assert isinstance(levels, tuple)
-
-
-# --- 3.9 generate_bid_levels ---
-
-
-class TestGenerateBidLevels:
-    def test_correct_length(self) -> None:
-        levels = generate_bid_levels(mid_price=100.0, n_orders=5)
-        assert len(levels) == 5
-
-    def test_first_level_below_mid(self) -> None:
-        levels = generate_bid_levels(mid_price=100.0, n_orders=5)
-        assert levels[0] < 100.0
-
-    def test_first_level_is_mid_divided_by_tick(self) -> None:
-        mid = 100.0
-        levels = generate_bid_levels(mid_price=mid, n_orders=1)
-        assert levels[0] == _default_round(mid / 1.003)
-
-    def test_monotonically_decreasing(self) -> None:
-        levels = generate_bid_levels(mid_price=100.0, n_orders=10)
-        for i in range(len(levels) - 1):
-            assert levels[i] > levels[i + 1]
-
-    def test_spacing_approximately_tick_size(self) -> None:
-        levels = generate_bid_levels(mid_price=100.0, n_orders=10)
-        for i in range(len(levels) - 1):
-            ratio = levels[i] / levels[i + 1]
-            assert abs(ratio - 1.003) < 0.001
-
-    def test_zero_n_orders(self) -> None:
-        levels = generate_bid_levels(mid_price=100.0, n_orders=0)
-        assert levels == ()
-
-    def test_spread_is_one_tick(self) -> None:
-        """Best ask (ask[0]) and best bid (bid[0]) are one tick apart."""
-        mid = 100.0
-        asks = generate_ask_levels(mid_price=mid, n_orders=1)
-        bids = generate_bid_levels(mid_price=mid, n_orders=1)
-        ratio = asks[0] / bids[0]
-        assert abs(ratio - 1.003) < 0.001
+    def test_5sf_rounding_various_magnitudes(self) -> None:
+        """5sf rounding works across different price magnitudes."""
+        assert _default_round(123.456789) == 123.46
+        assert _default_round(1.23456789) == 1.2346
+        assert _default_round(0.00123456789) == 0.0012346
+        assert _default_round(12345.6789) == 12346.0
