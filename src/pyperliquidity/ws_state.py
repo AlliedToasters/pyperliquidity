@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any, Literal
 
 from pyperliquidity.batch_emitter import BatchEmitter
 from pyperliquidity.inventory import Inventory
 from pyperliquidity.order_differ import OrderDiff, compute_diff
 from pyperliquidity.order_state import OrderState
+from pyperliquidity.pricing_grid import PricingGrid
 from pyperliquidity.quoting_engine import compute_desired_orders
 from pyperliquidity.rate_limit import RateLimitBudget
 
@@ -28,8 +30,10 @@ class WsState:
     ----------
     coin : str
         Spot coin name (e.g. ``"PURR"``).
+    start_px : float
+        Starting price for the fixed PricingGrid.
     n_orders : int
-        Number of orders per side.
+        Total number of grid levels.
     order_sz : float
         Size of a full order tranche.
     info : object
@@ -59,6 +63,7 @@ class WsState:
     def __init__(
         self,
         coin: str,
+        start_px: float,
         n_orders: int,
         order_sz: float,
         info: Any,
@@ -74,6 +79,7 @@ class WsState:
         allocated_usdc: float = float("inf"),
     ) -> None:
         self.coin = coin
+        self.start_px = start_px
         self.n_orders = n_orders
         self.order_sz = order_sz
         self.interval_s = interval_s
@@ -95,7 +101,7 @@ class WsState:
         self.rate_limit: RateLimitBudget = RateLimitBudget()
         self.emitter: BatchEmitter | None = None
         self.asset_id: int = 0
-        self._last_mid: float = 0.0
+        self.grid: PricingGrid | None = None
         self._balance_coin: str = ""  # resolved during _startup from spot_meta
 
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -123,7 +129,10 @@ class WsState:
         base_token_idx = spot_entry["tokens"][0]
         self._balance_coin = spot_meta["tokens"][base_token_idx]["name"]
 
-        # 2. Seed OrderState from open_orders
+        # 2. Construct fixed PricingGrid
+        self.grid = PricingGrid(start_px=self.start_px, n_orders=self.n_orders)
+
+        # 3. Seed OrderState from open_orders
         open_orders = await asyncio.to_thread(self._info.open_orders, self._address)
         for order in open_orders:
             if order.get("coin") != self.coin:
@@ -132,12 +141,14 @@ class WsState:
             side: Literal["buy", "sell"] = "buy" if order["side"] == "B" else "sell"
             px = float(order["limitPx"])
             sz = float(order["sz"])
-            level_index = self._price_to_level_index(px, side)
+            level_index = self.grid.level_for_price(px)
             self.order_state.on_place_confirmed(
-                oid=oid, side=side, level_index=level_index, price=px, size=sz,
+                oid=oid, side=side,
+                level_index=level_index if level_index is not None else -1,
+                price=px, size=sz,
             )
 
-        # 3. Seed Inventory from spot_user_state
+        # 4. Seed Inventory from spot_user_state
         spot_state = await asyncio.to_thread(
             self._info.spot_user_state, self._address,
         )
@@ -157,11 +168,7 @@ class WsState:
             account_usdc=usdc_bal,
         )
 
-        # Compute initial mid from inventory
-        if token_bal > 0 and usdc_bal > 0:
-            self._last_mid = usdc_bal / token_bal
-
-        # 4. Seed RateLimitBudget from user_rate_limit
+        # 5. Seed RateLimitBudget from user_rate_limit
         rate_info = await asyncio.to_thread(
             self._info.user_rate_limit, self._address,
         )
@@ -170,7 +177,7 @@ class WsState:
             n_requests=int(rate_info.get("nRequestsUsed", 0)),
         )
 
-        # 5. Construct BatchEmitter
+        # 6. Construct BatchEmitter
         self.emitter = BatchEmitter(
             coin=self.coin,
             asset_id=self.asset_id,
@@ -179,37 +186,11 @@ class WsState:
         )
 
         logger.info(
-            "Startup complete: coin=%s asset_id=%d mid=%.6f orders=%d",
-            self.coin, self.asset_id, self._last_mid,
+            "Startup complete: coin=%s asset_id=%d grid=[%.6f..%.6f] orders=%d",
+            self.coin, self.asset_id,
+            self.grid.levels[0], self.grid.levels[-1],
             len(self.order_state.orders_by_oid),
         )
-
-    def _price_to_level_index(self, px: float, side: str) -> int:
-        """Compute a per-side level index for a price relative to current mid.
-
-        Used during startup to assign level indices to existing orders.
-        Returns 0 for the closest-to-mid level, ascending away.
-        """
-        if self._last_mid <= 0:
-            return 0
-        if side == "sell":
-            # Ask levels: px >= mid, index = number of ticks from mid
-            if px <= 0:
-                return 0
-            ratio = px / self._last_mid
-            if ratio <= 1.0:
-                return 0
-            import math
-            return max(0, round(math.log(ratio) / math.log(1.003)))
-        else:
-            # Bid levels: px < mid, index = number of ticks below mid
-            if px <= 0:
-                return 0
-            ratio = self._last_mid / px
-            if ratio <= 1.0:
-                return 0
-            import math
-            return max(0, round(math.log(ratio) / math.log(1.003)) - 1)
 
     # -- WebSocket subscriptions -----------------------------------------------
 
@@ -277,9 +258,10 @@ class WsState:
                 side: Literal["buy", "sell"] = "buy" if order.get("side") == "B" else "sell"
                 px = float(order.get("limitPx", 0))
                 sz = float(order.get("sz", 0))
-                level_index = self._price_to_level_index(px, side)
+                level_index = self.grid.level_for_price(px) if self.grid else -1
                 self.order_state.on_place_confirmed(
-                    oid=oid, side=side, level_index=level_index,
+                    oid=oid, side=side,
+                    level_index=level_index if level_index is not None else -1,
                     price=px, size=sz,
                 )
             elif "Cannot modify" in status:
@@ -365,16 +347,15 @@ class WsState:
         """Run one iteration of the quoting pipeline."""
         assert self.inventory is not None
         assert self.emitter is not None
+        assert self.grid is not None
 
-        result = compute_desired_orders(
+        desired = compute_desired_orders(
+            grid=self.grid,
             effective_token=self.inventory.effective_token,
             effective_usdc=self.inventory.effective_usdc,
             order_sz=self.order_sz,
-            n_orders=self.n_orders,
             min_notional=self.min_notional,
         )
-        desired = result.orders
-        self._last_mid = result.mid_price
 
         current = self.order_state.get_current_orders()
 
@@ -388,10 +369,18 @@ class WsState:
 
         emit_result = await self.emitter.emit(diff, self.rate_limit)
 
+        # Derive cursor for logging
+        eff_token = self.inventory.effective_token
+        n_full = math.floor(eff_token / self.order_sz) if eff_token > 0 else 0
+        partial = eff_token % self.order_sz if eff_token > 0 else 0.0
+        total_ask = min(n_full + (1 if partial > 0 else 0), self.grid.n_orders)
+        cursor = self.grid.n_orders - total_ask
+        cursor_px = self.grid.price_at_level(cursor) if cursor < self.grid.n_orders else self.grid.levels[-1]
+
         logger.debug(
-            "Tick %d: mid=%.6f desired=%d current=%d | "
+            "Tick %d: cursor=%d px=%.6f desired=%d current=%d | "
             "placed=%d modified=%d cancelled=%d errors=%d | %s",
-            self._tick_count, self._last_mid, len(desired), len(current),
+            self._tick_count, cursor, cursor_px, len(desired), len(current),
             emit_result.n_placed, emit_result.n_modified, emit_result.n_cancelled,
             emit_result.n_errors, self.rate_limit.log_status(),
         )

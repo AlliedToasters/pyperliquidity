@@ -1,30 +1,4 @@
-# CLI
-
-## Purpose
-
-CLI entrypoint that parses config, validates inputs, constructs SDK objects, wires WsState, and starts the market maker.
-
-## Requirements
-
-### Requirement: CLI parses config file and environment variables
-
-The `main()` function SHALL use `argparse` to provide a `run` subcommand with a `--config` argument pointing to a TOML config file. The config file SHALL be parsed with `tomllib`. The private key SHALL be read from `PYPERLIQUIDITY_PRIVATE_KEY` and the wallet address from `PYPERLIQUIDITY_WALLET` environment variables. Secrets SHALL never be read from the config file.
-
-#### Scenario: Successful config parsing
-- **WHEN** `pyperliquidity run --config config.toml` is invoked with a valid config file and both env vars set
-- **THEN** the config is parsed, env vars are loaded, and the market maker starts
-
-#### Scenario: Missing config file
-- **WHEN** the specified config file does not exist
-- **THEN** the process exits with a clear error message indicating the file was not found
-
-#### Scenario: Missing private key env var
-- **WHEN** `PYPERLIQUIDITY_PRIVATE_KEY` is not set or empty
-- **THEN** the process exits with a clear error message before any SDK construction
-
-#### Scenario: Missing wallet env var
-- **WHEN** `PYPERLIQUIDITY_WALLET` is not set or empty
-- **THEN** the process exits with a clear error message before any SDK construction
+## MODIFIED Requirements
 
 ### Requirement: CLI validates config values on startup
 
@@ -67,11 +41,3 @@ The `start_px` config value SHALL be passed to `WsState` so it can construct the
 #### Scenario: start_px passed to WsState
 - **WHEN** config contains `strategy.start_px = 0.020777`
 - **THEN** WsState receives `start_px=0.020777` and uses it to construct the PricingGrid
-
-### Requirement: CLI logs resolved config at startup
-
-The CLI SHALL log the full resolved configuration at INFO level on startup. The private key MUST be masked or omitted from the log output. The wallet address, coin, all strategy/allocation/tuning params, and testnet flag SHALL be visible in the log.
-
-#### Scenario: Config logged at startup
-- **WHEN** the market maker starts successfully
-- **THEN** the full config (with private key masked) is logged at INFO level before the tick loop begins

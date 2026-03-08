@@ -16,7 +16,7 @@ from pyperliquidity.cli import _build_ws_state, _load_config, _load_env, _valida
 
 VALID_CONFIG = {
     "market": {"coin": "PURR", "testnet": False},
-    "strategy": {"n_orders": 10, "order_sz": 100.0},
+    "strategy": {"n_orders": 10, "order_sz": 100.0, "start_px": 1.0},
     "allocation": {"allocated_token": 1000.0, "allocated_usdc": 500.0},
 }
 
@@ -146,6 +146,21 @@ class TestValidateConfig:
         assert result["tuning"]["dead_zone_bps"] == 10.0
         # Others get defaults
         assert result["tuning"]["reconcile_every"] == 20
+
+    def test_missing_start_px(self) -> None:
+        cfg = {**VALID_CONFIG, "strategy": {"n_orders": 10, "order_sz": 100.0}}
+        with pytest.raises(SystemExit, match="start_px"):
+            _validate_config(cfg)
+
+    def test_zero_start_px(self) -> None:
+        cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "start_px": 0}}
+        with pytest.raises(SystemExit, match="start_px"):
+            _validate_config(cfg)
+
+    def test_negative_start_px(self) -> None:
+        cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "start_px": -1.0}}
+        with pytest.raises(SystemExit, match="start_px"):
+            _validate_config(cfg)
 
     def test_multiple_errors_reported(self) -> None:
         """All validation errors should be reported at once."""

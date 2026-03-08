@@ -49,14 +49,14 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
     if not market.get("coin"):
         errors.append("market.coin is required")
 
-    for key in ("order_sz",):
+    for key in ("order_sz", "start_px"):
         val = strategy.get(key)
         if val is None or val <= 0:
             errors.append(f"strategy.{key} must be positive")
 
     n_orders = strategy.get("n_orders")
     if n_orders is None or n_orders <= 0:
-        errors.append("strategy.n_orders must be a positive integer")
+        errors.append("strategy.n_orders must be a positive integer (total grid levels)")
 
     for key in ("allocated_token", "allocated_usdc"):
         val = allocation.get(key)
@@ -104,6 +104,7 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
 
     return WsState(
         coin=config["market"]["coin"],
+        start_px=strategy["start_px"],
         n_orders=strategy["n_orders"],
         order_sz=strategy["order_sz"],
         info=info,

@@ -201,6 +201,26 @@ class TestCrossSide:
         assert diff.cancels == []
         assert diff.places == []
 
+    def test_level_flip_on_cursor_shift(self):
+        """Cursor shift causes level 5 to flip from ask to bid → cancel + place."""
+        # Before: cursor at 5, level 5 is an ask
+        # After: cursor at 7, level 5 is now a bid
+        current = [
+            _tracked(1, "sell", 5, 101.5, 10.0),
+            _tracked(2, "sell", 6, 101.8, 10.0),
+        ]
+        desired = [
+            _desired("buy", 5, 101.5, 10.0),  # flipped from sell to buy
+            _desired("buy", 6, 101.8, 10.0),  # flipped from sell to buy
+        ]
+        diff = compute_diff(desired, current, **TIGHT)
+        # Both should be cancel + place (cross-side), no modifies
+        assert diff.modifies == []
+        assert set(diff.cancels) == {1, 2}
+        assert len(diff.places) == 2
+        placed_sides = {p.side for p in diff.places}
+        assert placed_sides == {"buy"}
+
 
 # ---------------------------------------------------------------------------
 # 3.7  Determinism
