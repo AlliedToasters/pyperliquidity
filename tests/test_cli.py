@@ -162,6 +162,29 @@ class TestValidateConfig:
         with pytest.raises(SystemExit, match="start_px"):
             _validate_config(cfg)
 
+    def test_active_levels_optional(self) -> None:
+        """active_levels is optional — omitting it should pass validation."""
+        result = _validate_config({**VALID_CONFIG})
+        assert result["strategy"].get("active_levels") is None
+
+    def test_active_levels_valid(self) -> None:
+        """Positive integer active_levels passes validation."""
+        cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "active_levels": 5}}
+        result = _validate_config(cfg)
+        assert result["strategy"]["active_levels"] == 5
+
+    def test_active_levels_zero_rejected(self) -> None:
+        """active_levels=0 is rejected."""
+        cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "active_levels": 0}}
+        with pytest.raises(SystemExit, match="active_levels"):
+            _validate_config(cfg)
+
+    def test_active_levels_negative_rejected(self) -> None:
+        """Negative active_levels is rejected."""
+        cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "active_levels": -1}}
+        with pytest.raises(SystemExit, match="active_levels"):
+            _validate_config(cfg)
+
     def test_multiple_errors_reported(self) -> None:
         """All validation errors should be reported at once."""
         cfg = {"market": {}, "strategy": {}, "allocation": {}}
@@ -194,3 +217,20 @@ class TestBuildWsStateAllocation:
 
         assert ws._allocated_token == 1000.0
         assert ws._allocated_usdc == 500.0
+        assert ws.active_levels is None
+
+    @patch("eth_account.Account")
+    @patch("hyperliquid.exchange.Exchange")
+    @patch("hyperliquid.info.Info")
+    def test_active_levels_passed_to_ws_state(
+        self, mock_info_cls: MagicMock, mock_exchange_cls: MagicMock, mock_account_cls: MagicMock,
+    ) -> None:
+        mock_info_cls.return_value = MagicMock()
+        mock_exchange_cls.return_value = MagicMock()
+        mock_account_cls.from_key.return_value = MagicMock()
+
+        cfg = {**VALID_CONFIG, "strategy": {**VALID_CONFIG["strategy"], "active_levels": 10}}
+        config = _validate_config(cfg)
+        ws = _build_ws_state(config, private_key="0xdeadbeef", wallet="0xabc")
+
+        assert ws.active_levels == 10

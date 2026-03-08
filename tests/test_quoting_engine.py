@@ -344,6 +344,83 @@ class TestEdgeCases:
         assert r1 == r2
 
 
+# --- Active levels windowing ---
+
+
+class TestActiveLevels:
+    def test_active_levels_none_places_all(self) -> None:
+        """Default active_levels=None places orders on all available levels."""
+        grid = _grid(10)
+        orders = compute_desired_orders(grid, 5000.0, 50000.0, 1000.0, active_levels=None)
+        asks = [o for o in orders if o.side == "sell"]
+        bids = [o for o in orders if o.side == "buy"]
+        # cursor=5: 5 asks (5-9), 5 bids (4-0)
+        assert len(asks) == 5
+        assert len(bids) == 5
+
+    def test_active_levels_limits_asks(self) -> None:
+        """Only N asks placed near cursor when active_levels is set."""
+        grid = _grid(10)
+        # cursor=5, asks at 5,6,7,8,9 normally
+        orders = compute_desired_orders(grid, 5000.0, 50000.0, 1000.0, active_levels=2)
+        asks = sorted(
+            [o for o in orders if o.side == "sell"],
+            key=lambda o: o.level_index,
+        )
+        assert len(asks) == 2
+        # Nearest asks to cursor: levels 5 and 6
+        assert asks[0].level_index == 5
+        assert asks[1].level_index == 6
+
+    def test_active_levels_limits_bids(self) -> None:
+        """Only N bids placed near cursor when active_levels is set."""
+        grid = _grid(10)
+        # cursor=5, bids at 4,3,2,1,0 normally
+        orders = compute_desired_orders(grid, 5000.0, 50000.0, 1000.0, active_levels=2)
+        bids = sorted(
+            [o for o in orders if o.side == "buy"],
+            key=lambda o: -o.level_index,
+        )
+        assert len(bids) == 2
+        # Nearest bids to cursor: levels 4 and 3
+        assert bids[0].level_index == 4
+        assert bids[1].level_index == 3
+
+    def test_active_levels_both_sides(self) -> None:
+        """Combined windowing limits both sides independently."""
+        grid = _grid(20)
+        # cursor=10, 10 asks and 10 bids normally
+        orders = compute_desired_orders(grid, 10000.0, 50000.0, 1000.0, active_levels=3)
+        asks = [o for o in orders if o.side == "sell"]
+        bids = [o for o in orders if o.side == "buy"]
+        assert len(asks) == 3
+        assert len(bids) == 3
+
+    def test_active_levels_larger_than_available(self) -> None:
+        """active_levels > available levels = no truncation."""
+        grid = _grid(10)
+        # cursor=5, 5 asks and 5 bids available
+        orders_capped = compute_desired_orders(grid, 5000.0, 50000.0, 1000.0, active_levels=100)
+        orders_none = compute_desired_orders(grid, 5000.0, 50000.0, 1000.0, active_levels=None)
+        assert len(orders_capped) == len(orders_none)
+
+    def test_large_grid_with_window(self) -> None:
+        """Large grid (100 levels) with active_levels=5 → ~10 total orders."""
+        grid = _grid(100)
+        # 50000 tokens, order_sz=1000 → n_full=50, cursor=50
+        orders = compute_desired_orders(grid, 50000.0, 500000.0, 1000.0, active_levels=5)
+        asks = [o for o in orders if o.side == "sell"]
+        bids = [o for o in orders if o.side == "buy"]
+        assert len(asks) == 5
+        assert len(bids) == 5
+        # Verify asks are the 5 nearest to cursor (ascending)
+        ask_levels = sorted(a.level_index for a in asks)
+        assert ask_levels == [50, 51, 52, 53, 54]
+        # Verify bids are the 5 nearest to cursor (descending)
+        bid_levels = sorted((b.level_index for b in bids), reverse=True)
+        assert bid_levels == [49, 48, 47, 46, 45]
+
+
 # --- No forbidden imports ---
 
 

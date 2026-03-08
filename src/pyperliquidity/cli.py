@@ -58,6 +58,10 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
     if n_orders is None or n_orders <= 0:
         errors.append("strategy.n_orders must be a positive integer (total grid levels)")
 
+    active_levels = strategy.get("active_levels")
+    if active_levels is not None and (not isinstance(active_levels, int) or active_levels <= 0):
+        errors.append("strategy.active_levels must be a positive integer when provided")
+
     for key in ("allocated_token", "allocated_usdc"):
         val = allocation.get(key)
         if val is None or val <= 0:
@@ -118,6 +122,7 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
         min_notional=tuning["min_notional"],
         allocated_token=allocation["allocated_token"],
         allocated_usdc=allocation["allocated_usdc"],
+        active_levels=strategy.get("active_levels"),
     )
 
 
