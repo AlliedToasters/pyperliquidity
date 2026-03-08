@@ -132,7 +132,12 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> Any:
+def _build_ws_state(
+    config: dict[str, Any],
+    private_key: str,
+    wallet: str,
+    cancel_on_shutdown: bool = True,
+) -> Any:
     """Construct SDK objects and WsState."""
     from eth_account import Account
     from hyperliquid.exchange import Exchange  # type: ignore[import-untyped]
@@ -176,6 +181,7 @@ def _build_ws_state(config: dict[str, Any], private_key: str, wallet: str) -> An
         allocated_token=allocation["allocated_token"],
         allocated_usdc=allocation["allocated_usdc"],
         active_levels=strategy.get("active_levels"),
+        cancel_on_shutdown=cancel_on_shutdown,
     )
 
 
@@ -185,6 +191,12 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command")
     run_parser = sub.add_parser("run", help="Start the market maker")
     run_parser.add_argument("--config", required=True, help="Path to config.toml")
+    run_parser.add_argument(
+        "--keep-orders",
+        action="store_true",
+        default=False,
+        help="Skip cancellation of resting orders on shutdown",
+    )
     args = parser.parse_args()
 
     if args.command != "run":
@@ -201,5 +213,6 @@ def main() -> None:
     safe = {**config, "_wallet": wallet, "_testnet": config.get("market", {}).get("testnet", False)}
     logger.info("Starting pyperliquidity with config: %s", safe)
 
-    ws_state = _build_ws_state(config, private_key, wallet)
+    cancel_on_shutdown = not args.keep_orders
+    ws_state = _build_ws_state(config, private_key, wallet, cancel_on_shutdown=cancel_on_shutdown)
     asyncio.run(ws_state.run())

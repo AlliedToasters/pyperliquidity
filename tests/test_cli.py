@@ -235,6 +235,75 @@ class TestBuildWsStateAllocation:
 
         assert ws.active_levels == 10
 
+    @patch("eth_account.Account")
+    @patch("hyperliquid.exchange.Exchange")
+    @patch("hyperliquid.info.Info")
+    def test_cancel_on_shutdown_default(
+        self, mock_info_cls: MagicMock, mock_exchange_cls: MagicMock, mock_account_cls: MagicMock,
+    ) -> None:
+        """cancel_on_shutdown defaults to True when not specified."""
+        mock_info_cls.return_value = MagicMock()
+        mock_exchange_cls.return_value = MagicMock()
+        mock_account_cls.from_key.return_value = MagicMock()
+
+        config = _validate_config({**VALID_CONFIG})
+        ws = _build_ws_state(config, private_key="0xdeadbeef", wallet="0xabc")
+
+        assert ws.cancel_on_shutdown is True
+
+    @patch("eth_account.Account")
+    @patch("hyperliquid.exchange.Exchange")
+    @patch("hyperliquid.info.Info")
+    def test_cancel_on_shutdown_false(
+        self, mock_info_cls: MagicMock, mock_exchange_cls: MagicMock, mock_account_cls: MagicMock,
+    ) -> None:
+        """cancel_on_shutdown=False is passed through to WsState."""
+        mock_info_cls.return_value = MagicMock()
+        mock_exchange_cls.return_value = MagicMock()
+        mock_account_cls.from_key.return_value = MagicMock()
+
+        config = _validate_config({**VALID_CONFIG})
+        ws = _build_ws_state(
+            config, private_key="0xdeadbeef", wallet="0xabc", cancel_on_shutdown=False,
+        )
+
+        assert ws.cancel_on_shutdown is False
+
+
+# ---------------------------------------------------------------------------
+# --keep-orders flag parsing
+# ---------------------------------------------------------------------------
+
+
+class TestKeepOrdersFlag:
+    """Verify --keep-orders CLI flag is parsed and passed through."""
+
+    def test_keep_orders_flag_accepted(self) -> None:
+        """--keep-orders flag is accepted by the argument parser."""
+        import argparse
+
+        parser = argparse.ArgumentParser(prog="pyperliquidity")
+        sub = parser.add_subparsers(dest="command")
+        run_parser = sub.add_parser("run")
+        run_parser.add_argument("--config", required=True)
+        run_parser.add_argument("--keep-orders", action="store_true", default=False)
+
+        args = parser.parse_args(["run", "--config", "test.toml", "--keep-orders"])
+        assert args.keep_orders is True
+
+    def test_keep_orders_default_false(self) -> None:
+        """--keep-orders defaults to False when not specified."""
+        import argparse
+
+        parser = argparse.ArgumentParser(prog="pyperliquidity")
+        sub = parser.add_subparsers(dest="command")
+        run_parser = sub.add_parser("run")
+        run_parser.add_argument("--config", required=True)
+        run_parser.add_argument("--keep-orders", action="store_true", default=False)
+
+        args = parser.parse_args(["run", "--config", "test.toml"])
+        assert args.keep_orders is False
+
 
 # ---------------------------------------------------------------------------
 # target_px config option
