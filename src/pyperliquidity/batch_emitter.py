@@ -95,6 +95,8 @@ class BatchEmitter:
         Order state tracker for lifecycle notifications.
     clock : callable
         Monotonic clock (default ``time.monotonic``).
+    sz_decimals : int
+        Number of decimal places to round order sizes to (default 5).
     """
 
     def __init__(
@@ -104,12 +106,14 @@ class BatchEmitter:
         exchange: Any,
         order_state: OrderState,
         clock: Any = time.monotonic,
+        sz_decimals: int = 5,
     ) -> None:
         self.coin = coin
         self.asset_id = asset_id
         self._exchange = exchange
         self._order_state = order_state
         self._clock = clock
+        self._sz_decimals = sz_decimals
         self._cooldowns: dict[tuple[str, str], float] = {}
         self._consecutive_rejects: dict[str, int] = {}
 
@@ -208,7 +212,7 @@ class BatchEmitter:
         cancel_oids: list[int],
         budget: RateLimitBudget,
     ) -> tuple[int, int]:
-        reqs = [{"coin": self.coin, "o": oid} for oid in cancel_oids]
+        reqs = [{"coin": self.coin, "oid": oid} for oid in cancel_oids]
 
         try:
             response = await asyncio.to_thread(self._exchange.bulk_cancel, reqs)
@@ -243,19 +247,29 @@ class BatchEmitter:
                 f"{tracked.side if tracked else None} desired_side={desired.side}"
             )
 
+        rounded: list[tuple[int, DesiredOrder, float]] = []
+        for oid, desired in modifies:
+            sz = round(desired.size, self._sz_decimals)
+            if sz <= 0:
+                continue
+            rounded.append((oid, desired, sz))
+
+        if not rounded:
+            return 0, 0
+
         reqs = [
             {
                 "oid": oid,
                 "order": {
                     "coin": self.coin,
                     "is_buy": desired.side == "buy",
-                    "sz": desired.size,
+                    "sz": sz,
                     "limit_px": desired.price,
                     "order_type": _ALO_ORDER_TYPE,
                     "reduce_only": False,
                 },
             }
-            for oid, desired in modifies
+            for oid, desired, sz in rounded
         ]
 
         try:
@@ -265,10 +279,10 @@ class BatchEmitter:
         finally:
             budget.on_request()
 
-        statuses = _parse_statuses(response, expected=len(modifies))
+        statuses = _parse_statuses(response, expected=len(rounded))
         n_ok = n_err = 0
 
-        for i, (original_oid, desired) in enumerate(modifies):
+        for i, (original_oid, desired, _sz) in enumerate(rounded):
             status = statuses[i] if i < len(statuses) else {}
 
             if "resting" in status:
@@ -311,16 +325,26 @@ class BatchEmitter:
         places: list[DesiredOrder],
         budget: RateLimitBudget,
     ) -> tuple[int, int]:
+        rounded: list[tuple[DesiredOrder, float]] = []
+        for d in places:
+            sz = round(d.size, self._sz_decimals)
+            if sz <= 0:
+                continue
+            rounded.append((d, sz))
+
+        if not rounded:
+            return 0, 0
+
         reqs = [
             {
                 "coin": self.coin,
                 "is_buy": d.side == "buy",
-                "sz": d.size,
+                "sz": sz,
                 "limit_px": d.price,
                 "order_type": _ALO_ORDER_TYPE,
                 "reduce_only": False,
             }
-            for d in places
+            for d, sz in rounded
         ]
 
         try:
@@ -328,10 +352,10 @@ class BatchEmitter:
         finally:
             budget.on_request()
 
-        statuses = _parse_statuses(response, expected=len(places))
+        statuses = _parse_statuses(response, expected=len(rounded))
         n_ok = n_err = 0
 
-        for i, desired in enumerate(places):
+        for i, (desired, _sz) in enumerate(rounded):
             status = statuses[i] if i < len(statuses) else {}
 
             if "resting" in status:
