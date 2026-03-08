@@ -158,7 +158,7 @@ def _build_ws_state(
     fixed_spot_meta = fetch_fixed_spot_meta(base_url)
     info = Info(base_url=base_url, skip_ws=False, spot_meta=fixed_spot_meta)
     account = Account.from_key(private_key)
-    exchange = Exchange(account, base_url=base_url)
+    exchange = Exchange(account, base_url=base_url, spot_meta=fixed_spot_meta)
 
     strategy = config["strategy"]
     tuning = config["tuning"]
