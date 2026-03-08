@@ -303,3 +303,173 @@ class TestKeepOrdersFlag:
 
         args = parser.parse_args(["run", "--config", "test.toml"])
         assert args.keep_orders is False
+
+
+# ---------------------------------------------------------------------------
+# target_px config option
+# ---------------------------------------------------------------------------
+
+
+# Config with target_px instead of explicit allocations
+TARGET_PX_CONFIG = {
+    "market": {"coin": "PURR", "testnet": False},
+    "strategy": {"n_orders": 10, "order_sz": 100.0, "start_px": 1.0, "target_px": 1.009},
+}
+
+
+class TestTargetPxValidation:
+    def test_target_px_replaces_allocation_requirement(self) -> None:
+        """When target_px is set, allocation section is not required."""
+        result = _validate_config({**TARGET_PX_CONFIG})
+        assert result["allocation"]["allocated_token"] > 0
+        assert result["allocation"]["allocated_usdc"] > 0
+
+    def test_target_px_computes_correct_allocations(self) -> None:
+        """target_px auto-computes allocation that places cursor correctly."""
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {
+                "n_orders": 20,
+                "order_sz": 50.0,
+                "start_px": 1.0,
+                "target_px": 1.0,  # cursor at level 0 = all asks
+            },
+        }
+        result = _validate_config(cfg)
+        # cursor=0 means all 20 levels are asks
+        assert result["allocation"]["allocated_token"] == 20 * 50.0
+        assert result["allocation"]["allocated_usdc"] == 0.0
+
+    def test_target_px_at_middle_of_grid(self) -> None:
+        """target_px in the middle of the grid splits allocations."""
+        from pyperliquidity.pricing_grid import PricingGrid
+
+        grid = PricingGrid(start_px=1.0, n_orders=20)
+        target = grid.levels[10]
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {
+                "n_orders": 20,
+                "order_sz": 50.0,
+                "start_px": 1.0,
+                "target_px": target,
+            },
+        }
+        result = _validate_config(cfg)
+        assert result["allocation"]["allocated_token"] == 10 * 50.0
+        expected_usdc = sum(50.0 * grid.price_at_level(i) for i in range(10))
+        assert abs(result["allocation"]["allocated_usdc"] - expected_usdc) < 1e-10
+
+    def test_target_px_below_start_px_rejected(self) -> None:
+        """target_px < start_px is rejected."""
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {
+                "n_orders": 10,
+                "order_sz": 100.0,
+                "start_px": 1.0,
+                "target_px": 0.5,
+            },
+        }
+        with pytest.raises(SystemExit, match="target_px.*must be >= .*start_px"):
+            _validate_config(cfg)
+
+    def test_target_px_above_grid_rejected(self) -> None:
+        """target_px above grid max is rejected."""
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {
+                "n_orders": 10,
+                "order_sz": 100.0,
+                "start_px": 1.0,
+                "target_px": 999.0,
+            },
+        }
+        with pytest.raises(SystemExit, match="target_px"):
+            _validate_config(cfg)
+
+    def test_target_px_zero_rejected(self) -> None:
+        """target_px=0 is rejected."""
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {
+                "n_orders": 10,
+                "order_sz": 100.0,
+                "start_px": 1.0,
+                "target_px": 0,
+            },
+        }
+        with pytest.raises(SystemExit, match="target_px must be positive"):
+            _validate_config(cfg)
+
+    def test_target_px_negative_rejected(self) -> None:
+        """Negative target_px is rejected."""
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {
+                "n_orders": 10,
+                "order_sz": 100.0,
+                "start_px": 1.0,
+                "target_px": -1.0,
+            },
+        }
+        with pytest.raises(SystemExit, match="target_px must be positive"):
+            _validate_config(cfg)
+
+    def test_backward_compatible_without_target_px(self) -> None:
+        """Without target_px, allocation fields are still required."""
+        result = _validate_config({**VALID_CONFIG})
+        assert result["allocation"]["allocated_token"] == 1000.0
+        assert result["allocation"]["allocated_usdc"] == 500.0
+
+    def test_no_target_px_missing_allocation_rejected(self) -> None:
+        """Without target_px, missing allocations are still an error."""
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {"n_orders": 10, "order_sz": 100.0, "start_px": 1.0},
+        }
+        with pytest.raises(SystemExit, match="allocated_token"):
+            _validate_config(cfg)
+
+    def test_target_px_optional(self) -> None:
+        """target_px is optional — omitting it should work with explicit allocations."""
+        result = _validate_config({**VALID_CONFIG})
+        # No target_px in the valid config
+        assert result["strategy"].get("target_px") is None
+        assert result["allocation"]["allocated_token"] == 1000.0
+
+
+class TestBuildWsStateWithTargetPx:
+    """Verify target_px computed allocations flow through to WsState."""
+
+    @patch("eth_account.Account")
+    @patch("hyperliquid.exchange.Exchange")
+    @patch("hyperliquid.info.Info")
+    def test_target_px_allocation_passed_to_ws_state(
+        self, mock_info_cls: MagicMock, mock_exchange_cls: MagicMock, mock_account_cls: MagicMock,
+    ) -> None:
+        mock_info_cls.return_value = MagicMock()
+        mock_exchange_cls.return_value = MagicMock()
+        mock_account_cls.from_key.return_value = MagicMock()
+
+        from pyperliquidity.pricing_grid import PricingGrid
+
+        grid = PricingGrid(start_px=1.0, n_orders=10)
+        target = grid.levels[5]
+        cfg = {
+            "market": {"coin": "PURR"},
+            "strategy": {
+                "n_orders": 10,
+                "order_sz": 100.0,
+                "start_px": 1.0,
+                "target_px": target,
+            },
+        }
+        config = _validate_config(cfg)
+        ws = _build_ws_state(config, private_key="0xdeadbeef", wallet="0xabc")
+
+        # cursor=5: 5 ask levels * 100 = 500 tokens
+        assert ws._allocated_token == 500.0
+        # 5 bid levels
+        expected_usdc = sum(100.0 * grid.price_at_level(i) for i in range(5))
+        assert abs(ws._allocated_usdc - expected_usdc) < 1e-10

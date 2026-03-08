@@ -38,7 +38,15 @@ def _load_env() -> tuple[str, str]:
 
 
 def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Validate required fields and apply defaults for optional tuning params."""
+    """Validate required fields and apply defaults for optional tuning params.
+
+    When ``strategy.target_px`` is provided, ``allocation.allocated_token`` and
+    ``allocation.allocated_usdc`` are computed automatically and the
+    ``[allocation]`` section becomes optional.  When ``target_px`` is absent,
+    both allocation fields are required (backward compatible).
+    """
+    from pyperliquidity.pricing_grid import compute_allocation_from_target_px
+
     errors: list[str] = []
 
     # Required sections/fields
@@ -62,10 +70,51 @@ def _validate_config(config: dict[str, Any]) -> dict[str, Any]:
     if active_levels is not None and (not isinstance(active_levels, int) or active_levels <= 0):
         errors.append("strategy.active_levels must be a positive integer when provided")
 
-    for key in ("allocated_token", "allocated_usdc"):
-        val = allocation.get(key)
-        if val is None or val <= 0:
-            errors.append(f"allocation.{key} must be positive")
+    # --- target_px vs allocation validation ---
+    target_px = strategy.get("target_px")
+
+    if target_px is not None:
+        # target_px must be positive
+        if target_px <= 0:
+            errors.append("strategy.target_px must be positive")
+
+        # target_px must be >= start_px (validated after core strategy fields pass)
+        start_px = strategy.get("start_px")
+        if start_px is not None and start_px > 0 and target_px > 0:
+            if target_px < start_px:
+                errors.append(
+                    f"strategy.target_px ({target_px}) must be >= "
+                    f"strategy.start_px ({start_px})"
+                )
+
+        # Bail early if there are errors before trying to compute allocations
+        if errors:
+            sys.exit("Config validation failed:\n  " + "\n  ".join(errors))
+
+        # Compute allocations from target_px
+        order_sz = strategy["order_sz"]
+        start_px = strategy["start_px"]
+        try:
+            token, usdc = compute_allocation_from_target_px(
+                target_px=target_px,
+                start_px=start_px,
+                n_orders=n_orders,
+                order_sz=order_sz,
+            )
+        except ValueError as exc:
+            sys.exit(f"Config validation failed:\n  strategy.target_px: {exc}")
+
+        # Populate allocation section with computed values
+        config["allocation"] = {
+            "allocated_token": token,
+            "allocated_usdc": usdc,
+        }
+    else:
+        # No target_px — require explicit allocations (backward compatible)
+        for key in ("allocated_token", "allocated_usdc"):
+            val = allocation.get(key)
+            if val is None or val <= 0:
+                errors.append(f"allocation.{key} must be positive")
 
     if errors:
         sys.exit("Config validation failed:\n  " + "\n  ".join(errors))
@@ -98,12 +147,16 @@ def _build_ws_state(
         TESTNET_API_URL,
     )
 
+    from pyperliquidity.spot_meta_fix import fetch_fixed_spot_meta
     from pyperliquidity.ws_state import WsState
 
     testnet = config.get("market", {}).get("testnet", False)
     base_url = TESTNET_API_URL if testnet else MAINNET_API_URL
 
-    info = Info(base_url=base_url, skip_ws=False)
+    # Fetch and fix spot_meta before constructing Info to avoid IndexError
+    # when token index values diverge from array positions.
+    fixed_spot_meta = fetch_fixed_spot_meta(base_url)
+    info = Info(base_url=base_url, skip_ws=False, spot_meta=fixed_spot_meta)
     account = Account.from_key(private_key)
     exchange = Exchange(account, base_url=base_url)
 

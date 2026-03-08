@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyperliquidity"
-version = "0.2.8"
+version = "0.2.10"
 description = "Off-chain HIP-2 Hyperliquidity market maker for Hyperliquid spot markets"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,6 +20,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "mypy>=1.10",
     "ruff>=0.5",
+    "types-requests>=2.31",
 ]
 
 [project.scripts]
