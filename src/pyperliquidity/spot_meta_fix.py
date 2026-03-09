@@ -126,7 +126,7 @@ def build_info(
     hyperliquid.info.Info
         A usable ``Info`` instance.
     """
-    from hyperliquid.info import Info
+    from hyperliquid.info import Info  # type: ignore[import-untyped]
 
     fixed = fetch_fixed_spot_meta(base_url)
     return Info(base_url=base_url, skip_ws=skip_ws, spot_meta=fixed)
@@ -157,7 +157,7 @@ def build_exchange(
     hyperliquid.exchange.Exchange
         A usable ``Exchange`` instance.
     """
-    from hyperliquid.exchange import Exchange
+    from hyperliquid.exchange import Exchange  # type: ignore[import-untyped]
 
     fixed = fetch_fixed_spot_meta(base_url)
     return Exchange(
