@@ -82,6 +82,10 @@ Hyperliquidity is parametrized by: `startPx`, `nOrders`, `orderSz`, `nSeededLeve
 
 The price is NOT computed from an AMM formula — it emerges from where the inventory sits on the grid. Filled asks become bids at the same grid level; filled bids become asks.
 
+## Tools
+
+**Use the LSP tool** for navigating this codebase — go-to-definition, find-references, hover for type info, document symbols, and call hierarchy. Prefer LSP over grep for tracing symbols and understanding call chains.
+
 ## Code Standards
 
 - Python 3.11+

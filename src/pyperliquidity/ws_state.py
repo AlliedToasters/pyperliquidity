@@ -533,6 +533,14 @@ class WsState:
 
         logger.info("Shutdown: cancelled %d order(s), order state cleared", len(oids))
 
+    def _close_websocket(self) -> None:
+        """Close the SDK WebSocket connection so daemon threads can exit."""
+        try:
+            self._info.disconnect_websocket()
+            logger.info("Shutdown: WebSocket disconnected")
+        except Exception:
+            logger.debug("Shutdown: disconnect_websocket failed (may already be closed)")
+
     # -- Main entry point ------------------------------------------------------
 
     async def run(self) -> None:
@@ -559,3 +567,4 @@ class WsState:
 
         await self._tick_loop()
         await self._shutdown()
+        self._close_websocket()
