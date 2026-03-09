@@ -102,3 +102,68 @@ def fetch_fixed_spot_meta(base_url: str) -> dict[str, Any]:
     resp.raise_for_status()
     raw: dict[str, Any] = resp.json()
     return fix_spot_meta(raw)
+
+
+def build_info(
+    base_url: str,
+    *,
+    skip_ws: bool = False,
+) -> Any:
+    """Build a Hyperliquid ``Info`` object with the spot_meta index fix applied.
+
+    This avoids the ``IndexError`` that occurs when constructing ``Info``
+    directly on networks where token indices diverge from array positions.
+
+    Parameters
+    ----------
+    base_url:
+        Hyperliquid API base URL (mainnet or testnet).
+    skip_ws:
+        If ``True``, skip WebSocket connection (useful for one-shot REST calls).
+
+    Returns
+    -------
+    hyperliquid.info.Info
+        A usable ``Info`` instance.
+    """
+    from hyperliquid.info import Info
+
+    fixed = fetch_fixed_spot_meta(base_url)
+    return Info(base_url=base_url, skip_ws=skip_ws, spot_meta=fixed)
+
+
+def build_exchange(
+    wallet: Any,
+    base_url: str,
+    *,
+    vault_address: str | None = None,
+    account_address: str | None = None,
+) -> Any:
+    """Build a Hyperliquid ``Exchange`` object with the spot_meta index fix applied.
+
+    Parameters
+    ----------
+    wallet:
+        An ``eth_account`` ``LocalAccount`` (from ``Account.from_key(...)``).
+    base_url:
+        Hyperliquid API base URL (mainnet or testnet).
+    vault_address:
+        Optional vault address for vault-delegated trading.
+    account_address:
+        Optional account address override.
+
+    Returns
+    -------
+    hyperliquid.exchange.Exchange
+        A usable ``Exchange`` instance.
+    """
+    from hyperliquid.exchange import Exchange
+
+    fixed = fetch_fixed_spot_meta(base_url)
+    return Exchange(
+        wallet,
+        base_url=base_url,
+        spot_meta=fixed,
+        vault_address=vault_address,
+        account_address=account_address,
+    )
